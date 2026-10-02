@@ -1,4 +1,4 @@
-# コタロの大格闘 Online（実験版） — Online Phase 8
+# コタロの大格闘 Online（実験版） — Online Phase 10
 
 > このフォルダは、完成版 Version 1.0 をコピーして作った **オンライン対戦の実験版** です。
 > 公開中の Version 1.0 とは別物として扱います（Version 1.0 のゲーム部分のファイルは一切変更していません）。
@@ -9,7 +9,8 @@
 > Online Phase 6 =「コタロの必殺技『クラゲ電撃』1 種類をオンライン化（予測・HOST 判定・遅延補償）」。
 > Online Phase 7 =「飛び道具『バブルショット』1 種類をオンライン化（HOST authoritative な Projectile 同期）」。
 > Online Phase 8 =「既存のガードをオンライン化（押している状態を送り、成立は HOST が判定）」。
-> KO・勝敗のオンライン化（正式なオンライン対戦）はまだです。
+> Online Phase 9 =「KO・3 ストック・リスポーン・無敵・勝敗の同期（すべて HOST authoritative）」。1 試合を最後まで遊べる。
+> Online Phase 10 =「READY → 3 / 2 / 1 / START! → 対戦 → 勝敗 → 再戦」を同じ接続のまま何試合でも続けられる。
 
 ## オンライン実験（Online Phase 1）
 タイトル →「オンライン実験 TEST」→「ルームを作る」/「ルームに参加」
@@ -62,14 +63,26 @@
 - GUEST は「押しているか」だけを送り、自分の画面では押した次のフレームからガードの姿勢が見える（予測）。防げたかは HOST が判定し、HIT と GUARD は攻撃ごとにどちらか 1 回だけ届く。
 - ガード用の遅延補償・rollback はなし。詳しくは `docs/ONLINE_PHASE8.md`。
 
+## KO・ストック・勝敗（Online Phase 9）
+- 両者 3 ストック。場外 → ストック -1 → 約 1 秒後にリスポーン（ダメージ 0）→ 約 2 秒の無敵（点滅）。数値・場外ラインは Version 1.0 のまま。
+- KO・ストック・リスポーン・無敵・勝者はすべて HOST が既存のルールで決め、KO ごとのイベントと 30Hz の状態で GUEST へ送る。GUEST は自分で決めない。
+- どちらかのストックが 0 で試合終了（両画面に同じ「〇〇 WIN」）。同じステップで両者が最後のストックを失ったら「DRAW」。終了後は入力・泡・命中で状態は変わらない。
+- 詳しくは `docs/ONLINE_PHASE9.md`。
+
+## 試合の流れ・再戦（Online Phase 10）
+- 接続後、接続画面で両方が「READY」を押すと試合開始（HOST / GUEST それぞれの READY / NOT READY を表示。片方だけでは始まらない）。
+- 3 / 2 / 1 / START!（Version 1.0 のカウントダウン）。HOST が GO の時刻を決め、GUEST は Ping の時計のずれで表示をそろえる。START! までは両者とも操作できない。
+- 勝敗表示で「もう一度」を両方が押すと次の試合（片方だけなら「相手を待っています…」）。「終了する」（または「実験を終了」）で接続画面へ。ページの再読み込み・再接続は不要。
+- 詳しくは `docs/ONLINE_PHASE10.md`。
+
 | 追加したファイル | 内容 |
 |---|---|
 | `src/network/net-protocol.js` | メッセージ形式・受信データの検証・ルームコード |
 | `src/network/net-session.js` | PeerJS による接続（HOST / GUEST）・Ping・通信テスト・切断検知・診断 |
 | `src/network/online-ui.js` | オンライン実験画面 |
-| `src/network/online-move.js` | 操作実験（Phase 2）・予測（Phase 3）・攻撃（Phase 4）・遅延補償（Phase 5）・クラゲ電撃（Phase 6）・バブルショット（Phase 7）・ガード（Phase 8）：遠隔入力・状態同期・補間表示・予測と補正・攻撃と命中・履歴と補償判定・技の音と演出・泡の同期と表示・GUEST パッド |
+| `src/network/online-move.js` | 操作実験（Phase 2）・予測（Phase 3）・攻撃（Phase 4）・遅延補償（Phase 5）・クラゲ電撃（Phase 6）・バブルショット（Phase 7）・ガード（Phase 8）・KO / ストック / 勝敗（Phase 9）・試合の流れ / 再戦（Phase 10）：遠隔入力・状態同期・補間表示・予測と補正・攻撃と命中・履歴と補償判定・技の音と演出・泡の同期と表示・GUEST パッド |
 | `css/online.css` | オンライン実験画面のスタイル |
-| `docs/ONLINE_PHASE1.md` 〜 `ONLINE_PHASE8.md` | 仕組み・テスト結果・実機確認項目 |
+| `docs/ONLINE_PHASE1.md` 〜 `ONLINE_PHASE10.md` | 仕組み・テスト結果・実機確認項目 |
 
 ---
 

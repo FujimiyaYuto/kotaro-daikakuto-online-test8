@@ -6,6 +6,8 @@
  *                  Online Phase 6：コタロの既存必殺技「クラゲ電撃」1 種類を追加（入力・予測・判定・遅延補償）
  *                  Online Phase 7：既存の飛び道具「バブルショット」1 種類を追加（HOST authoritative な Projectile 同期）
  *                  Online Phase 8：既存の「ガード」を追加（押している状態を送るだけ。成立は HOST が既存処理で決める）
+ *                  Online Phase 9：KO・3 ストック・リスポーン・無敵・勝敗の同期（すべて HOST authoritative）
+ *                  Online Phase 10：READY → カウントダウン → 対戦 → 勝敗 → 再戦 の 1 本の流れ（試合の番号 match gen）
  *
  *   HOST  … コタロ = HOST 本人の通常操作 / ルミポ = GUEST から届いた「入力」で、既存の Fighter 物理をそのまま使って動かす
  *   GUEST … 自分ではゲームを進めない。HOST から届いた状態（位置・向きなど）を少し遅らせて補間表示するだけ（予測なし）
@@ -15,7 +17,7 @@
  * ゲーム本体のファイルは変更しない。操作実験の間だけ、外から次のように差し替え、終了時に元へ戻す：
  *   - ルミポの controller（CpuController）→ RemoteInputController（GUEST の入力）       ※ CPU 対戦の AI には触れない
  *   - コタロの controller（InputManager）→ 移動・ジャンプだけを通すフィルター（攻撃・必殺・泡・ガードは無効）
- *   - ストックを Infinity（場外に落ちても既存ルールで復帰するだけ。勝敗は発生しない）
+ *   - ストックは Version 1.0 と同じ 3（Phase 8 までは Infinity。Phase 9 で KO・勝敗を有効化）
  *   - game.step（このインスタンスだけ）：HOST は「元の step → 状態送信」、GUEST は「入力送信 → 予測 → 表示 → カメラ」
  *
  * Phase 3（予測）の考え方：
@@ -72,6 +74,31 @@
  *   - GUEST は同じ入力を予測用ルミポに適用するので、押した次のフレームからガードの姿勢が見える（見た目と操作感のため。防げたかは決めない）。
  *   - HOST はガード成立を命中イベントと同じ番号の列（mh に g=1）で 1 回だけ送る。1 つの攻撃は既存の hitVictims で HIT か GUARD のどちらか一方だけ。
  *   - ガードの巻き戻し（ガード用の遅延補償）・rollback はしない。近接攻撃の遅延補償は「当たる位置」だけで、ガードできるかは HOST の今の状態で判定。
+ *
+ * Phase 9（KO・ストック・勝敗）の考え方：
+ *   - ストックは Version 1.0 と同じ 3（KG.CONFIG.rules）。場外・ストック -1・約 1 秒後のリスポーン・ダメージ 0・約 2 秒の無敵は
+ *     HOST の既存 StockRules がそのまま決める（数値は変更しない）。GUEST は KO・ストック・勝敗を一切自分で決めない。
+ *   - HOST は KO ごとに KO イベント（mk：KO 番号・どちらが・残りストック・その側の KO 回数・場外の位置・試合結果）を 1 回送る。
+ *     状態 st にも両者の残りストックと KO 回数、試合結果（r）を毎回載せる（イベントが遅れても状態で必ずそろう）。
+ *   - GUEST は KO 番号ごとに 1 回だけ演出・音を出し、ストックは HOST の値（絶対値）をそのまま使う。自分で引き算しないので、
+ *     同じ KO が何度届いてもストックは二重に減らない。
+ *   - リスポーンは「KO 回数（命の番号）が変わった」ことで分かる明確な状態遷移として扱う。予測用ルミポを HOST の状態に置き換え、
+ *     死亡前の予測（見た目だけの技・予測泡・表示のずれ・被弾補正）を捨てる。補間は命の番号が違う状態の間では行わない。
+ *   - 試合終了（どちらかのストック 0）は HOST が同じステップの KO をまとめてから確定する。同じステップで両者が最後のストックを失ったら
+ *     引き分け（DRAW）。終了後は既存の 'ending' → 'result' の流れ（入力は捨てる・戦闘判定なし・泡は消す）で、遅れて届いた入力・泡・命中で
+ *     ストック・ダメージ・勝者は変わらない（終了後の場外はストックを減らさず表示から外すだけ）。
+ *
+ * Phase 10（試合の流れ）の考え方：
+ *   - 接続画面（ロビー）で両方が READY（rd / ml の s=0。状態なので重複しても同じ）→ HOST が確認して既存の ms / mr でゲーム画面へ。
+ *   - 試合ごとに HOST が match gen（m）を決める。段階（カウントダウン / 対戦 / 決着直後 / 勝敗表示）は既存の Game.phase を HOST が進め、
+ *     ml（段階・GO までの残り・再戦希望）を段階が変わった時と 0.5 秒ごとに送る。GUEST は自分では段階を進めない。
+ *   - カウントダウン：HOST の時刻 + GO までの残りを Ping の時計のずれで GUEST の時計に直して 3 / 2 / 1 をそろえる。START!（操作開始）は
+ *     HOST の GO の確定を受けてから。カウントダウン・決着後・勝敗表示中は、GUEST は何も押していない入力だけを送り予測もしない
+ *     （押した回数も増やさない）。HOST は既存の Game.step がその間の入力を捨て、さらに「今の試合の対戦中」でない入力を何も押していない扱いにする。
+ *   - 試合の状態の初期化は既存の startMatch（resetTest）。ネットワーク側（予測・未確認入力・補間の履歴・予測泡・消えた泡の記録・命中 / KO の記録・
+ *     勝敗）は試合ごとに作り直す。入力番号・押した回数・状態番号・命中番号・泡の ID・KO 番号は接続中ずっと増え続ける（試合をまたいで重ならない）。
+ *   - st / mh / mk / pe / ma / mi に m を付け、GUEST は今の試合の番号でない受信を使わない（前の試合の遅れたパケットが新しい試合に影響しない）。
+ *   - 勝敗表示の「もう一度」を両方が押したら（GUEST は rd に終わった試合の番号を付ける）HOST が次の match gen を始める。「終了する」は既存の終了（me）。
  */
 (function (KG) {
   'use strict';
@@ -108,6 +135,9 @@
     stickThreshold: 0.3,      // GUEST：スティック／キーの倒し量をオン・オフに変える境目
   };
   const STATES = ['idle', 'run', 'jump', 'fall', 'attack', 'hurt'];
+  // Phase 10：試合の段階（既存の Game.phase）の番号。0 = ロビー（接続画面・READY）/ 1 カウントダウン / 2 対戦 / 3 決着直後 / 4 勝敗表示
+  const MT_CODE = { countdown: 1, fight: 2, ending: 3, result: 4 };
+  const MT_NAME = ['lobby', 'countdown', 'fight', 'ending', 'result'];
   const BLOCKED_ACTIONS = [];   // Phase 8：攻撃・必殺・泡・ガードをすべて通す（以前の Phase で外していたもの）
   const GUARD_STATES = ['none', 'startup', 'active', 'stun'];   // Fighter.guardState（Phase 8：状態に番号で載せる）
   const POYON = () => KG.MOVES.poyonAttack;
@@ -188,6 +218,22 @@
   const r1 = (v) => Math.round(v * 10) / 10;
   const lerp = (a, b, k) => a + (b - a) * k;
 
+  // Phase 9 / 10：KO・ストック・勝敗の 1 試合分の状態（[0] コタロ / [1] ルミポ）。result = 0 試合中 / 1 コタロの勝ち / 2 ルミポの勝ち / 3 引き分け
+  //   HOST：seq = KO 番号（接続中ずっと増える。試合をまたいでも重ならない）/ stepKOs = このステップの KO（ステップの終わりに送る）/ finals = このステップで最後のストックを失った側
+  //   GUEST：ids = 受け取った KO 番号（重複は捨てる）/ stocks・count = HOST の値 / life = 予測用ルミポの命の番号（= KO 回数）
+  function newKO(seq) {
+    const n = KG.CONFIG.rules.stocks;
+    return { over: false, result: 0, seq: seq || 0, count: [0, 0], stocks: [n, n], stepKOs: [], finals: [],
+      ids: new Set(), events: 0, dup: 0, respawns: [0, 0], life: 0, lateInputs: 0, lateHits: 0, endAt: 0 };
+  }
+  // Phase 10：最後のストックを失った側（同じ HOST ステップの分）→ 試合結果。勝敗の規則はここだけ
+  //   今の規則：1 人だけ → その相手の勝ち / 同じステップで 2 人とも → 引き分け（Phase 9。サドンデスなどに変える時はここを変える）
+  function resultFor(losers, game) {
+    if (!losers.length) return 0;
+    if (losers.length >= 2) return 3;
+    return losers[0] === game.player ? 2 : 1;
+  }
+
   // 直近 1 秒間の回数から Hz を出す
   class RateMeter {
     constructor() { this.n = 0; this.t0 = now(); this.hz = 0; }
@@ -235,8 +281,18 @@
       this.tick = 0;
     }
     reset() { /* game.resetTest() から呼ばれる。受信状態は保持（開始時に resetAll 済み） */ }
+    // Phase 10：新しい試合の開始。未適用の入力・押しっぱなしの状態・押下の記録を捨てる。
+    //   入力番号と押した回数の累計（lastSeq / lastJp / lastAp …）は接続中ずっと増え続ける値なので残す（試合ごとに戻さない）
+    resetMatch() {
+      this.queue = [];
+      this.last = { mx: 0, hj: 0, hg: 0 };
+      this.neutral = true;
+      this.presses = [];
+      this.standing = 0;
+    }
     // 検証済みの入力メッセージを受け付ける。古い・重複・逆順の番号は捨てる（操作状態が巻き戻らない）
-    accept(msg, t) {
+    // Phase 10：neutral = 今の試合（match gen）の入力ではない → 番号と回数の記録だけ進め、何も押していない入力として並べる
+    accept(msg, t, neutral) {
       if (msg.s <= this.lastSeq) return 'stale';
       if (msg.jp < this.lastJp || msg.ap < this.lastAp || msg.sp < this.lastSp || msg.bp < this.lastBp) return 'bad';   // ジャンプ・攻撃・必殺・泡の回数は減らない
       const pj = msg.jp > this.lastJp ? 1 : 0;           // 押した瞬間（GUEST の 1 ステップで押せるのは 1 回）
@@ -245,7 +301,8 @@
       const pb = msg.bp > this.lastBp ? 1 : 0;           // 泡を押した瞬間（Phase 7。同上）
       this.lastSeq = msg.s; this.lastJp = msg.jp; this.lastAp = msg.ap; this.lastSp = msg.sp; this.lastBp = msg.bp; this.lastAt = t; this.neutral = false;
       const ref = pa || ps;
-      this.queue.push({ s: msg.s, mx: (msg.r ? 1 : 0) - (msg.l ? 1 : 0), hj: msg.j, hg: msg.g, pj, pa, ps, pb, ts: msg.ts, rs: ref ? msg.rs : undefined, rf: ref ? msg.rf : undefined });
+      if (neutral) this.queue.push({ s: msg.s, mx: 0, hj: 0, hg: 0, pj: 0, pa: 0, ps: 0, pb: 0, ts: msg.ts });
+      else this.queue.push({ s: msg.s, mx: (msg.r ? 1 : 0) - (msg.l ? 1 : 0), hj: msg.j, hg: msg.g, pj, pa, ps, pb, ts: msg.ts, rs: ref ? msg.rs : undefined, rf: ref ? msg.rf : undefined });
       if (this.queue.length > CFG.hostQueueMax) {        // あふれたら古い入力を捨てる（押した瞬間は次へ持ち越す）
         const d = this.queue.shift();
         this.overflow++;
@@ -295,7 +352,8 @@
       // 未適用が 2 件以上の状態が 0.5 秒続いた時も 1 件追いつく（通信の揺れでたまった分を少しずつ減らし、HOST での反映の遅れを小さく保つ）
       this.standing = q.length > 1 ? (this.standing || 0) + 1 : 0;
       const drain = this.standing >= CFG.hostDrainTicks;
-      if ((q.length > CFG.hostQueueTarget || drain) && f.status && f.status.isAlive) {
+      // Phase 9：試合中だけ（終了後に GUEST の入力でルミポを動かさない。通常の 1 件は既存の Game.step が試合中以外は捨てる）
+      if ((q.length > CFG.hostQueueTarget || drain) && f.status && f.status.isAlive && KG.game && KG.game.phase === 'fight') {
         this.standing = 0;
         const extra = q.shift();
         this.noteApplied(extra);
@@ -378,6 +436,11 @@
       this.role = null;
       this.testId = 0;
       this.timers = [];
+      // Phase 10：ロビーの READY（me = 自分 / peer = 相手。GUEST の peer は HOST から届いた値、meHost = HOST が確認した自分の値）と、試合（match gen）
+      this.lobby = { me: false, peer: false, meHost: false };
+      this.genCounter = 0;          // HOST：試合の番号（このページで増え続ける。再戦ごとに +1）
+      this.mt = null;               // 今の試合：{ gen, state: 'wait' | 'countdown' | 'fight' | 'ending' | 'result', … }
+      this.mtStats = { staleMatch: 0, matches: 0 };   // 古い試合の受信を捨てた数・始めた試合の数（診断）
       // Phase 3：GUEST の予測 ON / OFF（A/B 比較用）。URL に ?pred=off で最初から OFF
       const qs = new URLSearchParams(location.search);
       this.predEnabled = qs.get('pred') !== 'off';
@@ -400,7 +463,15 @@
         else if (e.code === 'KeyI') this.st.keyAt[3] = e.timeStamp || now();   // Phase 8：ガード
       }, true);
       session.on('game', (m) => this.onMsg(m));
-      session.on('state', (st) => { if (st !== 'connected' && (this.active || this.starting)) this.stop('disconnect'); });
+      session.on('state', (st) => {
+        if (st !== 'connected' && (this.active || this.starting)) this.stop('disconnect');
+        if (st !== 'connected') this.lobbyReset();   // Phase 10：切断したら READY も解除（既存の切断処理はそのまま）
+      });
+      // Phase 10：勝敗表示で Enter = 「もう一度」（既存のメニューへは online-ui が Enter を渡さない）
+      window.addEventListener('keydown', (e) => {
+        if (e.repeat || !this.active || !KG.game || KG.game.phase !== 'result') return;
+        if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); this.requestRematch(); }
+      }, true);
     }
 
     log(t, lv) { this.session.log('[MOVE] ' + t, lv); }
@@ -422,6 +493,7 @@
         this.starting = null;
         s.sendGame({ t: 'me', id, r: 'timeout' });
         this.log('GUEST did not answer the start request', 'warn');
+        this.lobbyReset(); this.sendLobby();   // Phase 10：両方 NOT READY に戻す
         if (this.hooks.onStartFailed) this.hooks.onStartFailed('timeout');
       }, CFG.startAckTimeoutMs));
       if (this.hooks.onStarting) this.hooks.onStarting();
@@ -447,10 +519,21 @@
         pCtl: g.player.controller, cCtl: g.cpu.controller,
         pStocks: g.player.status.initialStocks, cStocks: g.cpu.status.initialStocks,
       };
-      // 勝敗・ストックは扱わない：落ちても既存ルールで復帰するだけ
-      g.player.status.initialStocks = Infinity;
-      g.cpu.status.initialStocks = Infinity;
+      // Phase 9：ストックは Version 1.0 と同じ値（3）。場外・リスポーン・無敵は HOST の既存 StockRules がそのまま決める
+      g.player.status.initialStocks = KG.CONFIG.rules.stocks;
+      g.cpu.status.initialStocks = KG.CONFIG.rules.stocks;
       if (role === 'HOST') {
+        // Phase 9：KO（既存の onKnockOut の後）を記録してステップの終わりにまとめて送る。最後のストック（既存の onFighterKO）は
+        //   すぐに勝者を決めず、同じステップの KO を集めてから確定する（同時 KO を処理順で決めない）
+        this.saved.onKnockOut = Object.prototype.hasOwnProperty.call(g, 'onKnockOut') ? g.onKnockOut : null;   // 効果音（installSound）の包みを残す
+        const baseOut = this.saved.onKnockOut || KG.Game.prototype.onKnockOut;
+        g.onKnockOut = (e, point) => { baseOut.call(g, e, point); this.onHostKO(e, point); };
+        g.onFighterKO = (e) => { this.st.ko.finals.push(e); };
+        // 試合終了後の場外：ストック・勝敗は変えず、表示から外すだけ（終了後に状態が変わらないように）
+        g.rules.knockOut = (e) => {
+          if (this.st.ko.over) { e.status.lifeState = 'respawning'; e.status.respawnTimer = Infinity; e.status.invincibleTimer = 0; return; }
+          KG.StockRules.prototype.knockOut.call(g.rules, e);
+        };
         this.remote = new RemoteInputController(g.cpu, g.stage);
         this.remote.onPress = (c) => this.computeRewind(c);
         this.remote.onFx = (ev) => g.effects.spawnMoveFx(ev);
@@ -488,19 +571,13 @@
         // Combat.resolve の中で「今の攻撃側が泡か」を知るため（泡には遅延補償を使わない）。キャラの攻撃判定の取り出しで解除
         for (const f of [g.player, g.cpu]) f.getActiveHitboxes = function () { self.projAttacking = false; return KG.Fighter.prototype.getActiveHitboxes.call(this); };
       }
-      g.startMatch();
+      this.lobbyReset();                                    // Phase 10：ロビーの READY は使い終わり（次に戻った時は両方 NOT READY から）
+      this.mt = { gen: 0, state: 'wait', goLocal: null, rematch: [false, false], myRematch: false, lastMlAt: 0, phaseSent: null };
       if (role === 'GUEST') {
-        // 予測用のルミポ（画面には出さない「計算用」）。同じ Fighter クラス・同じキャラ定義（移動値）・同じステージで動かす
-        this.pred = new KG.Fighter(g.cpu.def, { id: 'prediction', status: new KG.CombatStatus({ stocks: Infinity }) });
-        this.pred.selectMove = onlineSelectMove;
-        // Phase 7：予測でも「自分の泡は同時 2 個まで」（既存の projectileGate と同じ形。数えるのは GUEST の画面の自分の泡）
-        this.pred.projectileGate = (owner, defId) => this.ownBubbleCount() < KG.PROJECTILES[defId].maxPerOwner;
-        setLogic(this.pred, getLogic(g.cpu));               // 開始位置は HOST と同じ（startMatch で同じ出現位置）
-        this.pred.state = g.cpu.state;
+        // Phase 10：HOST が試合（match gen）を始めるまでは待つだけ（カウントダウンの表示も HOST の合図から）
+        g.countdownLabel = () => (this.mt.state === 'wait' ? null : KG.Game.prototype.countdownLabel.call(g));
+        this.resetGuestMatch(0);
       }
-      // カウントダウンは使わない（正式な試合ではない）。すぐに移動できる状態にする
-      g.phase = 'fight';
-      g.phaseTime = KG.CONFIG.match.startShow + 0.05;
       this.clearInput();
       const step0 = KG.Game.prototype.step;
       g.step = role === 'HOST'
@@ -514,6 +591,7 @@
       this.diagTimer = setInterval(() => this.renderDiag(), 250);
       this.renderDiag();
       this.log('move test started as ' + role + ' (id ' + id + ')');
+      if (role === 'HOST') this.startOnlineMatch();          // Phase 10：最初の試合（カウントダウンから）
       if (this.hooks.onStart) this.hooks.onStart(role);
       return true;
     }
@@ -534,6 +612,11 @@
         for (const f of [g.player, g.cpu]) { delete f.selectMove; delete f.receiveHit; delete f.receiveGuard; delete f.lastPressSeq; delete f.lastSpecialSeq; delete f.lastShootSeq; delete f.getHurtboxes; delete f.getActiveHitboxes; }  // 差し替えを削除
         delete g.render;
         delete g.projectiles.spawnFrom; delete g.projectiles.removeDead;   // Phase 7
+        if (this.role === 'HOST') {   // Phase 9：KO の差し替えを元に戻す（効果音の包みはそのまま残す）
+          if (this.saved.onKnockOut) g.onKnockOut = this.saved.onKnockOut; else delete g.onKnockOut;
+          delete g.onFighterKO; delete g.rules.knockOut;
+        }
+        delete g.countdownLabel;                          // Phase 10（GUEST）
         g.projectiles.clear();
         g.player.controller = this.saved.pCtl;
         g.cpu.controller = this.saved.cCtl;               // CPU AI を元のまま戻す
@@ -548,6 +631,8 @@
       }
       this.remote = null;
       this.pred = null;                                   // 予測も止める（切断後にルミポを動かし続けない）
+      if (this.mt) this.mt.state = 'stopped';
+      this.lobbyReset();                                  // Phase 10：接続画面に戻ったら両方 NOT READY（もう一度 READY を押して次の試合）
       if (this.hooks.onStop) this.hooks.onStop(reason, wasActive);
     }
 
@@ -607,6 +692,8 @@
         // Phase 7：泡（GUEST）。bubbles = 表示中の泡（キー = 'p' + Projectile ID / 予測泡は 'a' + 攻撃 ID）
         bp: 0, lastShootSent: 0, bubbles: new Map(), deadPids: new Set(), latestB: null, renderH: null,
         gb: { predSpawned: 0, linked: 0, discarded: 0, hostOnly: 0, hits: 0, dead: [0, 0, 0, 0, 0], linkErr: new Samples(), resid: new Samples() },
+        // Phase 9：KO・ストック・勝敗（newKO を参照。Phase 10 で試合ごとに作り直す）
+        ko: newKO(0),
       };
     }
 
@@ -631,6 +718,9 @@
         case 'mh': return this.onHitEvent(m);
         case 'ma': return this.onAttackResult(m);
         case 'pe': return this.onProjEvent(m);
+        case 'mk': return this.onKOEvent(m);   // Phase 9
+        case 'ml': return this.onLifecycle(m); // Phase 10
+        case 'rd': return this.onReady(m);     // Phase 10
       }
     }
 
@@ -643,14 +733,17 @@
       if (t - st.inRateWindow > 1000) { st.inRateWindow = t; st.inRateCount = 0; }
       if (++st.inRateCount > CFG.maxInputsPerSec) { st.floodDropped++; return; }
       const prevAp = this.remote.lastAp, prevSp = this.remote.lastSp, prevBp = this.remote.lastBp;
-      const res = this.remote.accept(m, t);
+      const res = this.remote.accept(m, t, m.m !== this.mt.gen || this.mt.state !== 'fight');   // Phase 10：今の試合の対戦中以外の入力は何も押していない扱い
       if (res === 'stale') { st.staleInputs++; return; }
       if (res === 'bad') { st.badInputs++; return; }
       st.inputRate.hit();
       st.lastInputSeqRecv = m.s;
+      if (m.m !== this.mt.gen) this.mtStats.staleMatch++;
       if (m.ap > prevAp) { st.lastPressRecv = m.s; st.hk[0].pressRecv++; }   // GUEST が攻撃を押した入力の番号（受信）
       if (m.sp > prevSp) { st.lastPressRecv = m.s; st.hk[1].pressRecv++; }   // Phase 6：必殺
       if (m.bp > prevBp) st.hk[2].pressRecv++;                                // Phase 7：泡
+      // Phase 9：試合終了後に届いた押下（終了を知る前に GUEST が押したもの）。既存の Game.step が試合中以外の入力を捨てるので状態は変わらない
+      if (st.ko.over && (m.ap > prevAp || m.sp > prevSp || m.bp > prevBp)) st.ko.lateInputs++;
       // GUEST の送信時刻を自分の時計に直して、届くまでの時間を推定（Ping から推定した時計のずれを使う）
       const off = this.session.clockOffset;
       if (off != null) st.inputDelay.add(Math.max(0, t - (m.ts - off)));
@@ -672,7 +765,242 @@
       st.hist.push({ tick: st.stepCount, x: k.x, y: k.y, facing: k.facing, alive: k.status.isAlive, hits: st.kotaroHits });
       if (st.hist.length > CFG.histTicks) st.hist.shift();
       this.trackHostAttacks();
+      this.flushHostKOs();
+      this.trackHostLifecycle();
       if (st.stepCount % CFG.stateEverySteps === 0) this.sendState();
+    }
+
+    // ---------------- Phase 10：ロビー（READY）と試合の流れ ----------------
+    // 接続画面の READY：両方 NOT READY に戻す（試合の開始時・接続画面へ戻った時・切断時）
+    lobbyReset() {
+      this.lobby.me = false; this.lobby.peer = false; this.lobby.meHost = false;
+      if (this.hooks.onLobby) this.hooks.onLobby();
+    }
+    // 自分の READY を切り替える（接続中で、試合をしていない時だけ）。HOST が両方の READY を確かめて試合を始める
+    setReady(on) {
+      const s = this.session;
+      if (s.state !== 'connected' || this.active || this.starting) return false;
+      this.lobby.me = !!on;
+      if (s.role === 'HOST') { this.sendLobby(); this.tryStartFromLobby(); }
+      else s.sendGame({ t: 'rd', m: 0, r: on ? 1 : 0 });   // 状態として送る（同じ値が何度届いても同じ結果）
+      if (this.hooks.onLobby) this.hooks.onLobby();
+      return true;
+    }
+    // HOST：ロビーの READY の状態（HOST が確認した両方の値）を GUEST へ
+    sendLobby() {
+      if (this.session.role !== 'HOST' || this.active) return;
+      this.session.sendGame({ t: 'ml', m: 0, s: 0, w: r1(now()), r: 0, hr: this.lobby.me ? 1 : 0, gr: this.lobby.peer ? 1 : 0 });
+    }
+    tryStartFromLobby() {
+      if (this.lobby.me && this.lobby.peer && !this.active && !this.starting) this.requestStart();
+    }
+    // HOST：GUEST の READY / 再戦希望（m = どの試合の後か。0 = ロビー）
+    onReady(m) {
+      if (this.session.role !== 'HOST') { this.session.stats.dropped++; return; }
+      if (!this.active) {
+        if (m.m !== 0) { this.mtStats.staleMatch++; return; }   // 終わった試合の再戦希望が遅れて届いた：ロビーの READY にはしない
+        this.lobby.peer = !!m.r;
+        this.sendLobby();
+        if (this.hooks.onLobby) this.hooks.onLobby();
+        this.tryStartFromLobby();
+        return;
+      }
+      if (m.m !== this.mt.gen || KG.game.phase !== 'result') { if (m.m !== this.mt.gen) this.mtStats.staleMatch++; return; }   // 今の試合の勝敗表示中だけ
+      this.mt.rematch[1] = !!m.r;
+      this.sendLifecycle();
+      this.tryRematch();
+    }
+    // 勝敗表示の「もう一度」（HOST・GUEST 共通）。HOST が両方の希望を確かめて次の試合を始める
+    requestRematch() {
+      if (!this.active || !this.mt || KG.game.phase !== 'result') return false;
+      if (this.role === 'HOST') {
+        this.mt.rematch[0] = true;
+        this.sendLifecycle();
+        this.tryRematch();
+      } else {
+        this.mt.myRematch = true;
+        this.session.sendGame({ t: 'rd', m: this.mt.gen, r: 1 });
+      }
+      try { if (KG.sound) KG.sound.play('confirm'); } catch (_) { /* noop */ }
+      this.renderResultUi();
+      return true;
+    }
+    tryRematch() {
+      if (this.mt.rematch[0] && this.mt.rematch[1]) this.startOnlineMatch();
+    }
+    // HOST：新しい試合を始める（新しい match gen → 初期化 → カウントダウン）。同じ接続のまま
+    startOnlineMatch() {
+      const g = KG.game, st = this.st;
+      const gen = ++this.genCounter;
+      this.mt = { gen, state: 'countdown', goLocal: null, rematch: [false, false], myRematch: false, lastMlAt: 0, phaseSent: null };
+      this.mtStats.matches++;
+      // ゲームの状態は既存の startMatch（resetTest）：出現位置・速度・ダメージ・ストック・KO・復帰待ち・無敵・技・被弾硬直・ガード・
+      //   再使用待ち・先行入力・泡・演出・勝敗 → 'countdown'（3 → 2 → 1 → START! と、その間は入力を捨てるのも既存の Game.step）
+      g.startMatch();
+      // ネットワーク側の試合ごとの状態：未適用の入力・押しっぱなし・技の記録・遅延補償の履歴・KO の記録（番号は増え続ける）
+      this.remote.resetMatch();
+      st.atk = [{ action: null }, { action: null }];
+      st.hist = []; st.lagViz = null; st.projAttacking = false;
+      st.ko = newKO(st.ko.seq);
+      this.clearInput();
+      this.sendLifecycle();
+      this.renderResultUi();
+      this.log('MATCH #' + gen + ' → countdown');
+    }
+    // HOST：毎ステップの終わり。段階が変わった時（カウントダウン → 対戦 → 決着 → 勝敗表示）と、0.5 秒ごとに試合の状態を送る
+    trackHostLifecycle() {
+      const g = KG.game, mt = this.mt;
+      if (MT_CODE[g.phase]) mt.state = g.phase;
+      if (mt.phaseSent !== g.phase || now() - mt.lastMlAt > 500) this.sendLifecycle();
+    }
+    // 試合の状態 ml：m = 試合の番号 / s = 段階 / cd = GO までの残り（ms。カウントダウン中だけ）/ w = HOST の時刻 / r = 結果 / hr・gr = 再戦希望
+    sendLifecycle() {
+      const g = KG.game, mt = this.mt, code = MT_CODE[g.phase] || 0;
+      const msg = { t: 'ml', m: mt.gen, s: code, w: r1(now()), r: this.st.ko.result, hr: mt.rematch[0] ? 1 : 0, gr: mt.rematch[1] ? 1 : 0 };
+      if (code === 1) msg.cd = Math.max(0, Math.round((KG.CONFIG.match.countdownStep * 3 - g.phaseTime) * 1000));
+      this.session.sendGame(msg);
+      mt.phaseSent = g.phase; mt.lastMlAt = now();
+    }
+
+    // GUEST：HOST の試合の状態（段階の移り変わりは HOST の合図だけで行う。自分では始めない・決めない）
+    onLifecycle(m) {
+      if (this.session.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.s === 0) {   // ロビー（接続画面）の READY
+        if (!this.active && !this.starting) { this.lobby.peer = !!m.hr; this.lobby.meHost = !!m.gr; if (this.hooks.onLobby) this.hooks.onLobby(); }
+        return;
+      }
+      if (!this.active) { this.session.stats.dropped++; return; }
+      const g = KG.game;
+      let mt = this.mt;
+      if (m.m < mt.gen) { this.mtStats.staleMatch++; return; }   // 前の試合の合図
+      if (m.m > mt.gen) { this.resetGuestMatch(m.m); mt = this.mt; }   // 新しい試合：前の試合の状態をすべて捨てる
+      mt.rematch = [!!m.hr, !!m.gr];
+      if (m.s === 1) {
+        // GO の時刻：HOST の時刻 w + 残り cd を、Ping で推定した時計のずれで自分の時計に直す（届くまでの遅れの分ずれない）
+        if (mt.state === 'countdown') mt.goLocal = this.hostToLocal(m.w) + m.cd;
+      } else if (m.s === 2) {
+        this.enterGuestFight(m.w);
+      } else {
+        if (!this.st.ko.over && m.r) this.finishGuestMatch(m.r);
+        if (m.s === 4 && mt.state !== 'result') {
+          mt.state = 'result'; g.phase = 'result'; g.phaseTime = 0;
+          this.onGuestResultShown();
+        }
+      }
+      this.renderResultUi();
+    }
+    // HOST の時刻（performance.now）→ 自分の時刻。Ping の時計のずれ（相手 − 自分）が無い間は、受信時刻 − 片道（RTT / 2）
+    hostToLocal(w) {
+      const off = this.session.clockOffset;
+      if (off != null) return w - off;
+      const rtt = this.session.ping.last;
+      return now() - (rtt != null ? rtt / 2 : 0);
+    }
+    // GUEST：HOST が対戦開始（GO）を確定した → ここから操作・予測を始める
+    enterGuestFight(w) {
+      const g = KG.game, mt = this.mt;
+      if (mt.state !== 'countdown' && mt.state !== 'wait') return;
+      if (mt.goLocal == null) mt.goLocal = this.hostToLocal(w);
+      mt.state = 'fight';
+      g.phase = 'fight';
+      g.phaseTime = Math.min(KG.CONFIG.match.startShow, Math.max(0, (now() - mt.goLocal) / 1000));   // START! の表示は GO の時刻から
+      this.log('MATCH #' + mt.gen + ' → fight');
+    }
+    guestFighting() { return !!this.mt && this.mt.state === 'fight' && !this.st.ko.over; }
+    // GUEST：段階ごとの表示時間。カウントダウンは GO の推定時刻から逆算（3 / 2 / 1 を HOST とそろえる。START! は HOST の確定まで出さない）
+    updateGuestPhase(dt) {
+      const g = KG.game, mt = this.mt;
+      if (mt.state === 'countdown') {
+        const total = KG.CONFIG.match.countdownStep * 3;
+        g.phase = 'countdown';
+        g.phaseTime = mt.goLocal == null ? 0 : Math.min(total - 0.001, Math.max(0, total - (mt.goLocal - now()) / 1000));
+      } else g.phaseTime += dt;
+    }
+    // GUEST：新しい試合（gen = 0 は最初の試合の合図を待つ間）。ゲームは既存の startMatch で初期化し、ネットワーク側の試合ごとの状態をすべて捨てる
+    resetGuestMatch(gen) {
+      const g = KG.game, st = this.st;
+      this.mt = { gen, state: gen ? 'countdown' : 'wait', goLocal: null, rematch: [false, false], myRematch: false, lastMlAt: 0, phaseSent: null };
+      if (gen) this.mtStats.matches++;
+      g.startMatch();   // 出現位置・ダメージ・ストック・勝敗・泡の表示・演出 → 'countdown'
+      Object.assign(st, {
+        // 予測と補正：未確認入力・表示のずれ・被弾補正・見た目だけの技
+        pending: [], vis: { x: 0, y: 0 }, blend: false, predHidden: false, hostAlive: true, lastInv: 0, hitPending: false, ghost: null,
+        fastUntil: 0, respawnSnap: false, wasStalled: false,
+        // 補間の履歴（前の試合の状態から補間しない）
+        snaps: [], latestF: null, interpCpu: null, viewRef: null, renderH: null, extrapolating: false,
+        // 技の表示・命中・泡（予測泡・消えた泡の記録）・KO
+        predAttacks: new Map(), disp: [null, null], flash: [0, 0],
+        bubbles: new Map(), deadPids: new Set(), hitRecvIds: new Set(), lastHitId: 0, ko: newKO(0),
+      });
+      // 予測用のルミポ（画面には出さない「計算用」）を作り直す。同じ Fighter クラス・同じキャラ定義（移動値）・同じステージで動かす
+      this.pred = new KG.Fighter(g.cpu.def, { id: 'prediction', status: new KG.CombatStatus({ stocks: Infinity }) });
+      this.pred.selectMove = onlineSelectMove;
+      // Phase 7：予測でも「自分の泡は同時 2 個まで」（既存の projectileGate と同じ形。数えるのは GUEST の画面の自分の泡）
+      this.pred.projectileGate = (owner, defId) => this.ownBubbleCount() < KG.PROJECTILES[defId].maxPerOwner;
+      setLogic(this.pred, getLogic(g.cpu));               // 開始位置は HOST と同じ（startMatch で同じ出現位置）
+      this.pred.state = g.cpu.state;
+      this.clearInput();
+      this.renderResultUi();
+      if (gen) this.log('MATCH #' + gen + ' → countdown');
+    }
+    // 勝敗表示の「もう一度」「終了する」と再戦の状態（オンラインの時だけ表示。既存の「もう一度」「タイトルへ戻る」は CSS で隠す）
+    renderResultUi() {
+      const el = this.$ && this.$.res;
+      if (!el || !this.mt) return;
+      const host = this.role === 'HOST';
+      const me = this.mt.rematch[host ? 0 : 1] || (!host && this.mt.myRematch);
+      const peer = this.mt.rematch[host ? 1 : 0];
+      const txt = me ? '相手を待っています…' : peer ? '相手が再戦を希望しています' : '';
+      if (el.status.textContent !== txt) el.status.textContent = txt;
+      el.again.disabled = me;
+      const label = me ? '再戦を希望しました' : 'もう一度';
+      if (el.again.textContent !== label) el.again.textContent = label;
+    }
+    // 診断：試合の番号・段階・再戦希望・古い試合の受信を捨てた数
+    matchLine() {
+      const mt = this.mt;
+      if (!mt) return '';
+      return 'MATCH #' + mt.gen + ' ' + mt.state + '  再戦 HOST ' + (mt.rematch[0] ? '○' : '-') + ' GUEST ' + (mt.rematch[1] || mt.myRematch ? '○' : '-') +
+        '  試合数 ' + this.mtStats.matches + '  古い試合の受信 ' + this.mtStats.staleMatch;
+    }
+
+    // ---------------- Phase 9：KO・勝敗（HOST） ----------------
+    // 既存の StockRules が場外を確定した（onKnockOut の後。ストックはもう減っている）。このステップの終わりにまとめて送る
+    onHostKO(e, point) {
+      if (!this.active || this.role !== 'HOST') return;
+      const g = KG.game, K = this.st.ko;
+      const v = e === g.player ? 0 : e === g.cpu ? 1 : -1;
+      if (v < 0) return;
+      K.count[v]++; K.stocks[v] = e.status.stocks;
+      K.stepKOs.push({ id: ++K.seq, v, s: e.status.stocks, n: K.count[v], x: r1(point.x), y: r1(point.y) });
+      this.log('KO #' + K.seq + ' ' + (v === 0 ? 'コタロ' : 'ルミポ') + ' → stock ' + e.status.stocks);
+    }
+    // ステップの終わり：このステップで最後のストックを失った側から結果を決め（両方なら引き分け）、KO イベントを送る
+    flushHostKOs() {
+      const K = this.st.ko, g = KG.game;
+      if (K.finals.length && !K.over) this.finishHostMatch(resultFor(K.finals, g));
+      K.finals.length = 0;
+      for (const k of K.stepKOs) this.session.sendGame({ t: 'mk', id: k.id, v: k.v, s: k.s, n: k.n, x: k.x, y: k.y, r: K.result, m: this.mt.gen });
+      K.stepKOs.length = 0;
+    }
+    // 試合終了を確定（Version 1.0 の onFighterKO と同じ 'ending' → 'result' の流れ。勝者は HOST だけが決める）
+    finishHostMatch(code) {
+      const g = KG.game, K = this.st.ko;
+      K.over = true; K.result = code; K.endAt = now();
+      this.applyResult(code);
+      // 残っている泡：消滅イベント（理由 = その他）を 1 回ずつ送ってから消す（Version 1.0 も終了時に飛び道具を残さない）
+      for (const pr of g.projectiles.list) if (!pr.dead) pr.kill('match');
+      this.onHostRemoveDead();
+      KG.ProjectileSystem.prototype.clear.call(g.projectiles);
+      this.log('MATCH END: ' + g.result + '（stock コタロ ' + g.player.status.stocks + ' / ルミポ ' + g.cpu.status.stocks + '）');
+    }
+    // 結果の表示（HOST・GUEST 共通）：既存の result / winner / phase をそのまま使う（勝敗表示・BGM は既存の HUD・サウンドが行う）
+    applyResult(code) {
+      const g = KG.game;
+      g.winner = code === 1 ? g.player : code === 2 ? g.cpu : null;
+      g.result = g.winner ? g.winner.displayName + ' WIN' : 'DRAW';
+      g.phase = 'ending';
+      g.phaseTime = 0;
     }
 
     // HOST：両者の技の開始・終了を見て、攻撃 ID・受理 / 出せなかった・HIT / MISS を記録する（判定そのものは既存処理）
@@ -754,7 +1082,7 @@
         const cls = c && pst ? 'both' : pst ? 'pastOnly' : c ? 'curOnly' : 'none';
         st.lagCls[cls]++; K.lagCls[cls]++;
         if (tr.blocked) { st.lagBlocked++; K.lagBlocked++; }
-        this.session.sendGame({ t: 'ma', k: tr.aid, h: tr.hit ? 1 : 0, v: tr.measured && tr.kAlive ? 1 : 0, kx: r1(tr.kx), rx: r1(tr.rx),
+        this.session.sendGame({ t: 'ma', m: this.mt.gen, k: tr.aid, h: tr.hit ? 1 : 0, v: tr.measured && tr.kAlive ? 1 : 0, kx: r1(tr.kx), rx: r1(tr.rx),
           c: c ? 1 : 0, rw: Math.min(1000, Math.round(tr.lagMs || 0)), pk: r1(tr.pk), ...(tr.guarded ? { g: 1 } : {}) });
       }
       tr.action = null;
@@ -784,7 +1112,7 @@
         if (tr.action) tr.guarded = true;
         k = act && act.aid ? act.aid : (gd.move ? kindOfMove(gd.move) : 0);
       }
-      const msg = { t: 'mh', id: ++st.hitSeq, a: ai, k, d: victim.status.damage, x: r1(gd.point.x), y: r1(gd.point.y), w: r1(now()), g: 1 };
+      const msg = { t: 'mh', m: this.mt.gen, id: ++st.hitSeq, a: ai, k, d: victim.status.damage, x: r1(gd.point.x), y: r1(gd.point.y), w: r1(now()), g: 1 };
       if (pid) msg.p = pid;
       this.session.sendGame(msg);
       this.log('GUARD #' + st.hitSeq + ' ' + (ai === 0 ? 'コタロ→ルミポ' : 'ルミポ→コタロ') + ' (attack ' + k + (pid ? ', projectile ' + pid : '') + ')');
@@ -809,7 +1137,7 @@
         const pr = hit.source;
         if (victim === g.player) st.kotaroHits++;
         st.bub[ai].hits++;
-        if (pr.npid) this.session.sendGame({ t: 'mh', id: ++st.hitSeq, a: ai, k: pr.naid || 2, d: victim.status.damage, x: r1(hit.point.x), y: r1(hit.point.y), w: r1(now()), p: pr.npid });
+        if (pr.npid) this.session.sendGame({ t: 'mh', m: this.mt.gen, id: ++st.hitSeq, a: ai, k: pr.naid || 2, d: victim.status.damage, x: r1(hit.point.x), y: r1(hit.point.y), w: r1(now()), p: pr.npid });
         this.log('HIT #' + st.hitSeq + ' 泡 ' + (ai === 0 ? 'コタロ→ルミポ' : 'ルミポ→コタロ') + ' (projectile ' + pr.npid + ', damage ' + victim.status.damage + '%)');
         return;
       }
@@ -842,7 +1170,7 @@
           K.lagOnlyHits++; K.escGap.add(gap); K.escCls[c3]++;
         }
       }
-      this.session.sendGame({ t: 'mh', id: ++st.hitSeq, a: ai, k: aid, d: victim.status.damage, x: r1(hit.point.x), y: r1(hit.point.y), w: r1(now()) });
+      this.session.sendGame({ t: 'mh', m: this.mt.gen, id: ++st.hitSeq, a: ai, k: aid, d: victim.status.damage, x: r1(hit.point.x), y: r1(hit.point.y), w: r1(now()) });
       this.log('HIT #' + st.hitSeq + ' ' + (ai === 0 ? 'コタロ→ルミポ' : 'ルミポ→コタロ') + ' (attack ' + aid + ', damage ' + victim.status.damage + '%)');
     }
 
@@ -856,11 +1184,12 @@
           (fi.action && kindOfMove(fi.action.move) === 1 ? 128 : 0) | (fi.action && kindOfMove(fi.action.move) === 2 ? 256 : 0) |   // Phase 6 / 7：技の種類
           (fi.guardState === 'startup' || fi.guardState === 'active' ? 512 : 0) | (fi.guardState === 'stun' ? 1024 : 0);           // Phase 8：ガード
         // [7] 蓄積ダメージ / [8] 技のフレーム（-1 = なし）/ [9] 傾き（被弾時の回転）
+        // [10] 残りストック / [11] KO 回数（命の番号。Phase 9）
         return [r1(fi.x), r1(fi.y), r1(fi.vx), r1(fi.vy), fi.facing < 0 ? -1 : 1, flags, Math.min(60, Math.round(s.invincibleTimer * 100) / 100),
-          s.damage, fi.action ? fi.action.frame : -1, Math.round(fi.angle * 100) / 100];
+          s.damage, fi.action ? fi.action.frame : -1, Math.round(fi.angle * 100) / 100, s.stocks, st.ko.count[fi === g.player ? 0 : 1]];
       });
       // a = 適用済みの最新入力番号 / p = ルミポの移動に関わる値（予測の作り直し用。丸めない）
-      const ok = this.session.sendGame({ t: 'st', s: ++st.stateSeq, h: r1(g.time * 1000), w: r1(now()), a: this.remote.lastApplied, f, p: getLogic(g.cpu), b: this.hostBubbles() });
+      const ok = this.session.sendGame({ t: 'st', s: ++st.stateSeq, h: r1(g.time * 1000), w: r1(now()), a: this.remote.lastApplied, f, p: getLogic(g.cpu), b: this.hostBubbles(), r: st.ko.result, m: this.mt.gen, l: MT_CODE[g.phase] || 0 });
       if (ok) {
         st.stateRate.hit();
         st.sentTicks.set(st.stateSeq, st.stepCount);   // Phase 5：この番号の状態はこのステップのもの
@@ -895,7 +1224,7 @@
         const r = DEATH_CODES[pr.deathReason] != null ? DEATH_CODES[pr.deathReason] : 4;
         const B = st.bub[pr.nowner];
         B.dead[r]++;
-        this.session.sendGame({ t: 'pe', i: pr.npid, r, x: r1(pr.x), y: r1(pr.y), h: r1(g.time * 1000), k: pr.naid, o: pr.nowner });
+        this.session.sendGame({ t: 'pe', m: this.mt.gen, i: pr.npid, r, x: r1(pr.x), y: r1(pr.y), h: r1(g.time * 1000), k: pr.naid, o: pr.nowner });
       }
     }
     // 状態に載せる「場にある泡」（最大 4 個：コタロ 2 + ルミポ 2）
@@ -1009,7 +1338,7 @@
       const g = KG.game;
       if (!this.active) return;
       g.time += dt;
-      g.phaseTime += dt;
+      this.updateGuestPhase(dt);   // Phase 10：段階の移り変わりは HOST の合図（ml）だけ。ここでは表示の時間を進めるだけ
       const st0 = this.st;
       st0.flash[0] = Math.max(0, st0.flash[0] - dt); st0.flash[1] = Math.max(0, st0.flash[1] - dt);
       // Phase 6：表示用キャラの再使用待ち（HUD の必殺ゲージの見た目だけ。判定には使わない）
@@ -1028,7 +1357,11 @@
     // 同じ入力を予測用ルミポにもすぐ適用する（HOST の返事を待たない）
     sampleInput(dt) {
       const st = this.st;
-      const cmd = KG.game.input.poll();
+      // Phase 9 / 10：対戦中（HOST が GO を確定した後・決着の前）以外は何も押していない入力だけを送る（押したものは読み捨てる。
+      //   押した回数も増やさないので、カウントダウン中・勝敗表示中に押したものが GO の後に出ることはない。HOST が入力待ちで警告しないよう送信は続ける）
+      const fighting = this.guestFighting();
+      const polled = KG.game.input.poll();
+      const cmd = fighting ? polled : KG.createEmptyCommand();
       const l = cmd.moveX < -CFG.stickThreshold ? 1 : 0;
       const r = cmd.moveX > CFG.stickThreshold ? 1 : 0;
       const j = cmd.held.jump ? 1 : 0;
@@ -1043,7 +1376,7 @@
       if (ps) st.sp++;                                  // Phase 6：必殺も同じ
       const t = now();
       const s = ++st.inputSeq;
-      const msg = { t: 'mi', s, l, r, j, jp: st.jp, ap: st.ap, sp: st.sp, bp: st.bp, g: gd, ts: r1(t) };
+      const msg = { t: 'mi', s, l, r, j, jp: st.jp, ap: st.ap, sp: st.sp, bp: st.bp, g: gd, ts: r1(t), m: this.mt.gen };   // Phase 10：m = 今の試合の番号
       // Phase 5 / 6：攻撃・必殺を押した入力だけ、その瞬間の画面のコタロがどの HOST 状態だったか（番号と割合）を付ける。座標は送らない
       if ((pa || ps) && st.viewRef) { msg.rs = st.viewRef.s; msg.rf = Math.round(st.viewRef.k * 1000); }
       if (!this.session.sendGame(msg)) return; // 切断中は予測もしない
@@ -1056,6 +1389,7 @@
       st.inputRate.hit();
       st.sentTimes.set(s, t);
       if (st.sentTimes.size > 240) st.sentTimes.delete(st.sentTimes.keys().next().value);
+      if (!fighting) return;   // Phase 10：対戦中以外は予測しない（未確認入力にも積まない）
       // 未確認入力として覚えておく（HOST の a で確認済みになったら捨てる）
       const c = { s, mx: r - l, hj: j, hg: gd, pj, pa, ps, pb, t };
       st.pending.push(c);
@@ -1066,7 +1400,7 @@
     // 予測：既存の Fighter.update() をそのまま 1 回呼ぶ（HOST の RemoteInputController と同じコマンドの作り方）
     predictStep(c, dt) {
       const f = this.pred, st = this.st;
-      if (!f || st.predHidden) return;
+      if (!f || st.predHidden || !this.guestFighting()) return;   // Phase 9 / 10：対戦中以外は予測しない（HOST の状態だけ）
       if (this.ackStalled()) return;   // HOST が入力を確認していない：先へ進めない（HOST の状態に従う）
       const wasGuard = f.guardState !== 'none';
       const started = applyCmd(f, c, KG.game.stage);
@@ -1105,7 +1439,10 @@
       st.gg.hostGuard = m.p[25];
       if (m.p[25] > 0 && st.guardPressAt) { st.gg.keyToHost.add(now() - st.guardPressAt); st.guardPressAt = 0; }
       if (!alive) { st.hostAlive = false; st.predHidden = true; return; }   // 場外・復帰待ち：HOST の判定に従う
-      const wasHidden = st.predHidden || !st.hostAlive;
+      // Phase 9：命の番号（HOST の KO 回数）が変わった = HOST がリスポーンを確定した。死亡前の予測を残さない
+      const respawned = m.f[1][11] !== st.ko.life;
+      if (respawned) this.onGuestRespawn(m.f[1][11]);
+      const wasHidden = st.predHidden || !st.hostAlive || respawned;
       st.hostAlive = true;
       // HOST で始まった攻撃の ID（受理の確認）
       if (m.p[12] >= 0 && m.p[17] && !st.acceptedAids.has(m.p[17])) {
@@ -1129,11 +1466,14 @@
       // 未確認入力を重ねず HOST の状態をそのまま使う（通信が止まった時に、自分の画面だけ動き続けないように）
       const stalled = this.ackStalled();
       if (stalled !== st.wasStalled) { st.wasStalled = stalled; if (stalled) { st.stallCount++; this.log('inputs not acknowledged for ' + CFG.inputTimeoutMs + 'ms → prediction paused', 'warn'); } }
-      if (!stalled) for (const c of st.pending) applyCmd(f, c, KG.game.stage);
+      const fighting = this.guestFighting();
+      if (!fighting) st.pending.length = 0;          // Phase 9 / 10：対戦中以外は未確認入力を重ねない（HOST は対戦中以外の入力を使わない）
+      if (!stalled && fighting) for (const c of st.pending) applyCmd(f, c, KG.game.stage);
       void dt;
       // HOST で攻撃が出なかった（予測していた攻撃が作り直しで消えた）：見た目だけ最後まで再生して自然に終える（被弾中は即座にやめる）
       // Phase 6：クラゲ電撃がまだ溜め（startup）なら、溜めの終わりまでで止める（HOST で出ていない放電・音は出さない）
-      if (beforeAct && !f.action && f.hitstun === 0 && beforeAct.frame < beforeAct.move.totalFrames) {
+      // Phase 9：場外・復帰待ちから戻った時（リスポーン）は、隠れる前の技を見た目で続けない
+      if (beforeAct && !wasHidden && !f.action && f.hitstun === 0 && beforeAct.frame < beforeAct.move.totalFrames) {
         const fa = firstActive(beforeAct.move);
         beforeAct.limit = kindOfMove(beforeAct.move) !== 0 && beforeAct.frame < fa ? fa - 1 : beforeAct.move.totalFrames;   // 電撃・泡は「出る」前で止める
         st.ghost = beforeAct;
@@ -1171,11 +1511,13 @@
     // GUEST：HOST の命中イベント（同じ ID は 1 回だけ）。見た目（エフェクト・音・白く光る）を出し、ダメージ表示を HOST の値にする
     onHitEvent(m) {
       if (!this.active || this.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.m !== this.mt.gen) { this.mtStats.staleMatch++; return; }   // Phase 10：前の試合の命中
       const st = this.st, g = KG.game;
       // 同じ命中番号は 1 回だけ（二重のエフェクト・音・ダメージ表示を出さない）。古すぎる番号（64 件以上前）も捨てる
       // （Phase 6：同じステップの相打ちでは命中が 2 件続けて届く。番号の集合で判定し、届く順番には頼らない）
       if (st.hitRecvIds.has(m.id) || m.id <= st.lastHitId - 64) { st.gg.dup++; return; }   // Phase 8：重複の数（診断）
       st.hitRecvIds.add(m.id);
+      if (st.ko.over) { st.ko.lateHits++; return; }   // Phase 9：試合終了後の命中は表示もダメージも反映しない（HOST は終了後に判定しない）
       // Phase 8：同じ攻撃（攻撃 ID・泡なら Projectile ID）で HIT と GUARD の両方が来たら数える（既存の hitVictims により本来 0）
       const rkey = m.a + ':' + (m.p ? 'p' + m.p : m.k);
       if (st.gg.results.has(rkey)) st.gg.double++;
@@ -1292,6 +1634,7 @@
     // HOST で泡が消えた（ID ごとに 1 回）
     onProjEvent(m) {
       if (!this.active || this.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.m !== this.mt.gen) { this.mtStats.staleMatch++; return; }   // Phase 10：前の試合の泡
       const st = this.st;
       if (st.deadPids.has(m.i)) return;
       st.deadPids.add(m.i);
@@ -1378,9 +1721,66 @@
       try { if (KG.sound) KG.sound.play('guard'); } catch (_) { /* noop */ }
     }
 
+    // ---------------- Phase 9：KO・ストック・勝敗（GUEST の表示。決めるのは HOST） ----------------
+    // HOST の KO イベント（KO 番号ごとに 1 回）。場外の演出・音は既存の onKnockOut。ストックは HOST の値をそのまま使う（引き算しない）
+    onKOEvent(m) {
+      if (!this.active || this.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.m !== this.mt.gen) { this.mtStats.staleMatch++; return; }   // Phase 10：前の試合の KO
+      const K = this.st.ko, g = KG.game;
+      if (K.ids.has(m.id)) { K.dup++; return; }
+      K.ids.add(m.id);
+      if (K.ids.size > 64) K.ids.delete(K.ids.values().next().value);
+      K.events++;
+      this.syncStocks(m.s, m.n, m.v);
+      try { g.onKnockOut(m.v === 0 ? g.player : g.cpu, { x: m.x, y: m.y }); } catch (_) { /* noop */ }
+      if (m.v === 1) { this.st.hostAlive = false; this.st.predHidden = true; this.st.ghost = null; }   // 自分（ルミポ）の KO：リスポーンは HOST の状態を待つ
+      if (m.r && !K.over) this.finishGuestMatch(m.r);
+    }
+    // 残りストック：HOST の値（KO 回数が今より古くない時だけ。古い値で戻さない）
+    syncStocks(stocks, count, i) {
+      const K = this.st.ko;
+      if (count < K.count[i]) return;
+      K.count[i] = count; K.stocks[i] = stocks;
+    }
+    // HUD 用の場にいるか / 復帰待ち / KO（ストック 0）。既存の RulesHud がそのまま表示する
+    setDisplayLife(fi, i, alive) {
+      const K = this.st.ko;
+      fi.status.stocks = K.stocks[i];
+      fi.status.lifeState = alive ? 'alive' : K.stocks[i] <= 0 ? 'ko' : 'respawning';
+    }
+    // HOST が自分（ルミポ）のリスポーンを確定した：予測用ルミポは呼び出し元で HOST の状態に置き換える。ここでは死亡前の予測を捨てる
+    //   （見た目だけ続けていた技・HOST で確認されていない予測泡・表示のずれ・被弾補正）。未確認入力のうち HOST が適用済みの分は捨て済みで、
+    //   残りはリスポーン後に HOST が適用する入力なので、そのまま適用し直す（HOST と同じ結果になる）
+    onGuestRespawn(life) {
+      const st = this.st;
+      st.ko.life = life;
+      st.ghost = null; st.hitPending = false; st.fastUntil = 0;
+      st.vis.x = 0; st.vis.y = 0;
+      for (const b of st.bubbles.values()) if (b.owner === 1 && b.mode === 'own' && !b.pid) this.discardPredBubble(b.aid);
+      if (life > 0) st.ko.respawns[1]++;
+    }
+    // HOST が試合終了を確定した（KO イベント or 状態の r。1 回だけ）。以後は予測・入力・命中を使わない
+    finishGuestMatch(code) {
+      const st = this.st, K = st.ko;
+      if (K.over) return;
+      K.over = true; K.result = code; K.endAt = now();
+      this.applyResult(code);
+      if (this.mt.state === 'fight' || this.mt.state === 'countdown') this.mt.state = 'ending';   // Phase 10（勝敗表示へは HOST の合図で）
+      st.pending.length = 0; st.ghost = null;
+      for (const b of st.bubbles.values()) if (b.fade == null && !b.ended) b.fade = 0.15;   // 残っている泡は薄く消す（HOST も消している）
+      this.log('MATCH END: ' + KG.game.result);
+    }
+    // 勝敗表示が出た瞬間（GUEST）：ジングルは自分（ルミポ）が勝ったかで選ぶ（既存の SoundSystem はコタロ視点のため、同じ瞬間の自動再生を止める）
+    onGuestResultShown() {
+      const snd = KG.sound, g = KG.game;
+      if (!snd) return;
+      try { snd.prevPhase = 'result'; snd.play(g.winner === g.cpu ? 'jingleWin' : 'jingleLose'); } catch (_) { /* noop */ }
+    }
+
     // GUEST：自分の攻撃の HOST での結果（HIT / MISS と、判定が出た瞬間の HOST 上の位置）。見た目との比較（診断）だけに使う
     onAttackResult(m) {
       if (!this.active || this.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.m !== this.mt.gen) { this.mtStats.staleMatch++; return; }   // Phase 10：前の試合の攻撃の結果
       const st = this.st;
       const rec = st.predAttacks.get(m.k);
       const G = st.gk[kindOfAid(m.k)];
@@ -1436,6 +1836,7 @@
 
     onState(m) {
       if (!this.active || this.role !== 'GUEST') { this.session.stats.dropped++; return; }
+      if (m.m !== this.mt.gen) { this.mtStats.staleMatch++; return; }   // Phase 10：別の試合の状態（試合の合図 ml より前・前の試合）は使わない
       const st = this.st;
       if (m.s <= st.lastStateSeqRecv) { st.staleStates++; return; }  // 古い・重複・逆順の状態は捨てる
       const t = now();
@@ -1458,6 +1859,10 @@
       }
       const off = this.session.clockOffset;
       if (off != null) st.stateDelay.add(Math.max(0, t - (m.w - off)));
+      this.syncStocks(m.f[0][10], m.f[0][11], 0);
+      this.syncStocks(m.f[1][10], m.f[1][11], 1);
+      if (m.l === 2) this.enterGuestFight(m.w);              // Phase 10：GO の合図（ml）より先に状態で知った時も同じ処理（1 回だけ）
+      if (m.r && !st.ko.over) this.finishGuestMatch(m.r);   // Phase 9：KO イベントより先に状態で終了を知った時も同じ処理（1 回だけ）
       this.reconcile(m);
       this.syncBubbles(m);
     }
@@ -1500,7 +1905,7 @@
       fi.prevX = prevX; fi.prevY = prevY;
       if ((alive && !wasAlive) || st.respawnSnap) { fi.prevX = fi.x; fi.prevY = fi.y; st.respawnSnap = false; }
       fi.vx = base.vx; fi.vy = base.vy; fi.facing = base.facing; fi.grounded = base.grounded; fi.state = base.state;
-      fi.status.lifeState = alive ? 'alive' : 'respawning';
+      this.setDisplayLife(fi, 1, alive);
       fi.status.invincibleTimer = this.predEnabled ? st.lastInv : base.inv;
       // ---- Phase 4：技・被弾の見た目 ----
       let act = null, hitstop = 0, hitstun = 0, angle = 0;
@@ -1640,7 +2045,8 @@
           const a = A.f[idx], b = B.f[idx];
           const k = Math.min(1, Math.max(0, (renderH - A.h) / Math.max(1, B.h - A.h)));
           src = k < 0.5 ? a : b;
-          if (Math.hypot(b[0] - a[0], b[1] - a[1]) > CFG.snapDistance || !(a[5] & 1) !== !(b[5] & 1)) { x = src[0]; y = src[1]; }
+          // 場にいるかが違う・命の番号が違う（Phase 9：KO をはさむ）2 つの状態の間は補間しない
+          if (Math.hypot(b[0] - a[0], b[1] - a[1]) > CFG.snapDistance || !(a[5] & 1) !== !(b[5] & 1) || a[11] !== b[11]) { x = src[0]; y = src[1]; }
           else { x = lerp(a[0], b[0], k); y = lerp(a[1], b[1], k); }
         }
         const alive = !!(src[5] & 1);
@@ -1657,7 +2063,7 @@
         fi.facing = src[4];
         fi.grounded = !!(src[5] & 2);
         fi.state = STATES[(src[5] >> 2) & 7] || 'idle';
-        fi.status.lifeState = alive ? 'alive' : 'respawning';
+        this.setDisplayLife(fi, 0, alive);
         fi.status.invincibleTimer = src[6];
         // コタロの技・被弾の見た目（HOST の状態のまま）とダメージ
         this.setDisplayAction(0, fi, src[8] >= 0 ? { move: moveOfKind(src[5] & 128 ? 1 : src[5] & 256 ? 2 : 0), frame: src[8] } : null, src[5] & 32 ? 1 : 0, src[5] & 64 ? 1 : 0, src[9], st.flash[0]);
@@ -1675,7 +2081,7 @@
       hud.hidden = true;
       hud.innerHTML =
         '<div class="olm-top">' +
-          '<span class="olm-badge">ONLINE TEST・ぽよん＋電撃＋泡＋ガード</span>' +
+          '<span class="olm-badge">ONLINE TEST・3ストック</span>' +
           '<span class="olm-role"></span>' +
           '<button type="button" class="olm-btn olm-pred" data-olm="pred">予測 ON</button>' +
           '<button type="button" class="olm-btn olm-lag" data-olm="lag">LagComp ON</button>' +
@@ -1685,6 +2091,16 @@
         '<pre class="olm-diag"></pre>' +
         '<p class="olm-hint">移動：<kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd>　ジャンプ：<kbd>Space</kbd> <kbd>W</kbd> <kbd>↑</kbd>　攻撃（ぽよんアタック）：<kbd>J</kbd>　必殺（クラゲ電撃）：<kbd>K</kbd>　泡（バブルショット）：<kbd>L</kbd>　ガード：<kbd>I</kbd></p>';
       root.appendChild(hud);
+      // Phase 9：勝敗表示（既存の #ko-overlay）に、オンライン実験の時だけ出す案内（「もう一度」「タイトルへ戻る」は CSS で隠す）
+      //   Phase 10：「もう一度」（両方が押したら次の試合）・「終了する」（接続画面へ）と、相手を待っているかの表示
+      const ov = document.getElementById('ko-overlay');
+      if (ov) {
+        const box = document.createElement('div');
+        box.className = 'ko-online';
+        box.innerHTML = '<p class="ko-online-status" aria-live="polite"></p><div class="ko-online-actions">' +
+          '<button type="button" class="menu-btn primary" data-olr="again">もう一度</button><button type="button" class="menu-btn ghost" data-olr="quit">終了する</button></div>';
+        ov.appendChild(box);
+      }
       this.$ = { role: hud.querySelector('.olm-role'), diag: hud.querySelector('.olm-diag'), predBtn: hud.querySelector('[data-olm="pred"]'), lagBtn: hud.querySelector('[data-olm="lag"]') };
       const bindBtn = (el, fn) => {
         el.addEventListener('pointerdown', (e) => { e.stopPropagation(); el._armed = e.pointerId; });
@@ -1692,6 +2108,12 @@
         el.addEventListener('click', (e) => { if (e.detail === 0) fn(); });
       };
       bindBtn(hud.querySelector('[data-olm="end"]'), () => { if (KG.sound) KG.sound.play('back'); this.end(); });
+      if (ov) {
+        const q = (k) => ov.querySelector('[data-olr="' + k + '"]');
+        this.$.res = { status: ov.querySelector('.ko-online-status'), again: q('again') };
+        bindBtn(q('again'), () => { if (!this.$.res.again.disabled) this.requestRematch(); });
+        bindBtn(q('quit'), () => { if (KG.sound) KG.sound.play('back'); this.end(); });
+      }
       bindBtn(hud.querySelector('[data-olm="diag"]'), () => hud.classList.toggle('diag-off'));
       bindBtn(this.$.predBtn, () => { if (KG.sound) KG.sound.play('select'); this.setPrediction(!this.predEnabled); });
       bindBtn(this.$.lagBtn, () => { if (KG.sound) KG.sound.play('select'); this.setLagComp(!this.lagEnabled); });
@@ -1769,6 +2191,7 @@
     // 診断（スクリーンショット 1 枚で読めるよう、技ごとの結果を表にまとめる）
     renderDiag() {
       if (!this.active) return;
+      this.renderResultUi();   // Phase 10
       const s = this.session, st = this.st, p = s.ping;
       const ms = (v) => v == null ? '-' : Math.round(v) + 'ms';
       const hz = (v) => v.toFixed(0) + 'Hz';
@@ -1807,6 +2230,8 @@
           'ガード  GUEST入力 ' + (r.last.hg ? 'ON' : 'OFF') + ' HOST状態 ルミポ ' + KG.game.cpu.guardState + ' / コタロ ' + KG.game.player.guardState +
             ' │ ' + ['コタロ', 'ルミポ'].map((nm, i) => nm + 'が受けた GUARD ' + st.gd[i].guard + ' HIT ' + st.gd[i].hit + '（背面 ' + st.gd[i].back + ' 空中 ' + st.gd[i].air + ' 出始め ' + st.gd[i].startup + '）').join(' / ') +
             ' │ 押す→HOST反映 ' + ms(st.guardApply.avg),
+          this.koLine() + '  │ 終了後の押下 ' + st.ko.lateInputs,
+          this.matchLine(),
         );
       } else {
         const stall = st.lastStateAt ? now() - st.lastStateAt : null;
@@ -1838,9 +2263,19 @@
           ' │ GUARD ' + gg.guardRecv + ' HIT ' + gg.hitRecv + '（自分が受けた GUARD ' + gg.guardMine + ' HIT ' + gg.hitMine + '）' +
           ' │ 予測と不一致 ' + gg.mismatch + ' 重複 ' + gg.dup + ' HIT+GUARD ' + gg.double +
           ' │ 押す→表示 ' + ms(gg.keyToGuard.mean) + ' 押す→HOST反映(往復) ' + ms(gg.keyToHost.mean));
+        lines.push(this.matchLine());
+        lines.push(this.koLine() + '  │ KOイベント ' + st.ko.events + ' 重複 ' + st.ko.dup + '  リスポーン ' + st.ko.respawns[1] + '  終了後の命中 ' + st.ko.lateHits);
       }
       const text = lines.join('\n');
       if (this.$.diag.textContent !== text) this.$.diag.textContent = text;
+    }
+
+    // Phase 9：KO・ストック・勝敗の 1 行（HOST・GUEST 共通。値はどちらも HOST が決めたもの）
+    koLine() {
+      const K = this.st.ko, g = KG.game;
+      const inv = (f) => (f.status.isInvincible ? ' 無敵' + f.status.invincibleTimer.toFixed(1) + 's' : '');
+      const res = ['試合中', 'コタロ WIN', 'ルミポ WIN', 'DRAW'][K.result] || '-';
+      return 'KO  コタロ stock ' + K.stocks[0] + ' (KO ' + K.count[0] + ')' + inv(g.player) + ' / ルミポ stock ' + K.stocks[1] + ' (KO ' + K.count[1] + ')' + inv(g.cpu) + '  │ ' + res;
     }
 
     // テスト・確認用
