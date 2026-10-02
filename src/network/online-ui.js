@@ -38,7 +38,7 @@
   const DC_TEXT = { '-': '-', connecting: '準備中', open: 'open', closing: '終了中', closed: 'closed' };
   const ROUTE_TEXT = { relay: 'TURN中継', host: '直接（同じネットワーク）', p2p: '直接（NAT越え）' };
   // 操作実験中にゲームへ渡さないキー（R = 開発用リセット / Enter / ガード）。Phase 4 から J（ぽよん）、Phase 6 から K（電撃）、Phase 7 から L（泡）は通す
-  const TEST_BLOCKED_KEYS = new Set(['KeyR', 'Enter', 'NumpadEnter']);   // Phase 8 から I（ガード）も通す
+  const TEST_BLOCKED_KEYS = new Set(['KeyR', 'Enter', 'NumpadEnter', 'Escape']);   // Phase 8 から I（ガード）も通す。Phase 9：勝敗表示の Esc（タイトルへ）も止める
   const MOVE_END_TEXT = {
     'user': '操作実験を終了しました。',
     'remote-user': '相手が操作実験を終了しました。',

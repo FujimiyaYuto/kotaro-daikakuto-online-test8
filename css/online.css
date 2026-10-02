@@ -474,3 +474,8 @@ body.is-touch[data-online-test="guest"] #ol-pad { display: block; }
 }
 .olp-gd small { display: block; margin-top: 3px; font-size: 11px; letter-spacing: 0.08em; }
 .olp-gd.pressed > span { transform: scale(0.92); background: radial-gradient(circle at 35% 28%, rgba(240, 255, 255, 0.9), rgba(150, 230, 255, 0.78) 55%, rgba(70, 150, 200, 0.82)); }
+
+/* Phase 9：オンライン実験の勝敗表示。既存の「もう一度」「タイトルへ戻る」は使わない（終了は「実験を終了」）*/
+.ko-online-note { display: none; }
+body[data-online-test] #ko-overlay .ko-actions { display: none !important; }
+body[data-online-test] #ko-overlay .ko-online-note { display: block; font-size: 13px; opacity: 0.85; }

@@ -448,7 +448,7 @@
         case 'ba': this.onBurstAck(msg); break;
         case 'br': this.onBurstReport(msg); break;
         // Online Phase 2（操作実験）のメッセージは online-move.js へ渡す（検証済みのものだけ）
-        case 'ms': case 'mr': case 'me': case 'mi': case 'st': case 'mh': case 'ma': case 'pe':
+        case 'ms': case 'mr': case 'me': case 'mi': case 'st': case 'mh': case 'ma': case 'pe': case 'mk':   // mk = Phase 9（KO）
           if (this.listeners.game && this.listeners.game.length) this.emit('game', msg);
           else this.stats.dropped++;
           break;

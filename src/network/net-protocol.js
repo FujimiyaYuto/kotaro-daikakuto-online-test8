@@ -13,7 +13,7 @@
   'use strict';
 
   const APP_ID = 'kotaro-online-exp';   // 別アプリと誤接続していないかの確認用
-  const PROTO_VERSION = 8;              // 通信の形式を変えたら上げる（違うと接続を断る）。2 = Phase 2（操作実験）/ 3 = Phase 3（予測）/ 4 = Phase 4（攻撃）/ 5 = Phase 5（攻撃の遅延補償）/ 6 = Phase 6（クラゲ電撃）/ 7 = Phase 7（バブルショット）/ 8 = Phase 8（ガード）
+  const PROTO_VERSION = 9;              // 通信の形式を変えたら上げる（違うと接続を断る）。2 = Phase 2（操作実験）/ 3 = Phase 3（予測）/ 4 = Phase 4（攻撃）/ 5 = Phase 5（攻撃の遅延補償）/ 6 = Phase 6（クラゲ電撃）/ 7 = Phase 7（バブルショット）/ 8 = Phase 8（ガード）/ 9 = Phase 9（KO・ストック・勝敗）
   const MAX_MSG_CHARS = 1400;           // 1メッセージの上限（文字数）。最大の st（HOST 状態。Phase 7 で泡 最大 4 個を含む）でも 約 800 文字
 
   // ルームコード：表示用は「KOTA-3812」。PeerJS 上の ID はアプリ固有の長い接頭辞 + 4桁（他アプリと混ざらない）
@@ -100,6 +100,10 @@
     // pe = HOST で泡が消えた（Phase 7）：i=Projectile ID / r=理由（0=命中 1=地形 2=寿命 3=場外 4=その他）/ x,y=消えた位置 / h=HOST のゲーム内時刻(ms)
     pe: (m) => (isInt(m.i, 1, BIG) && isInt(m.r, 0, 4) && isNum(m.x, -POS_MAX, POS_MAX) && isNum(m.y, -POS_MAX, POS_MAX) && isNum(m.h, 0, TIME_MAX))
       ? { t: 'pe', i: m.i, r: m.r, x: m.x, y: m.y, h: m.h } : null,
+    // mk = HOST で KO（Phase 9。KO ごとに 1 回）：id=KO 番号 / v=KO された側(0=コタロ,1=ルミポ) / s=その側の残りストック（KO 後）/
+    //      n=その側の KO 回数（命の番号）/ x,y=場外の位置（演出用）/ r=試合結果（0=試合中 1=コタロの勝ち 2=ルミポの勝ち 3=引き分け）
+    mk: (m) => (isInt(m.id, 1, BIG) && isBit(m.v) && isInt(m.s, 0, 99) && isInt(m.n, 1, 999) && isNum(m.x, -POS_MAX, POS_MAX) && isNum(m.y, -POS_MAX, POS_MAX) && isInt(m.r, 0, 3))
+      ? { t: 'mk', id: m.id, v: m.v, s: m.s, n: m.n, x: m.x, y: m.y, r: m.r } : null,
     // ma = GUEST の攻撃の HOST での結果（診断用）：k=攻撃 ID / h=HIT か / v=位置を測れたか / kx,rx=判定が出た瞬間のコタロ・ルミポの x
     //      Phase 5：c=現在位置で判定した場合に当たっていたか / rw=参照した過去（ms）/ pk=遅延補償で参照したコタロの x
     ma: (m) => (isInt(m.k, 1, BIG) && isBit(m.h) && isBit(m.v) && isNum(m.kx, -POS_MAX, POS_MAX) && isNum(m.rx, -POS_MAX, POS_MAX) &&
@@ -108,18 +112,22 @@
     // st = HOST のゲーム状態：s=状態番号 / h=HOST のゲーム内時刻(ms) / w=送信時刻 / a=適用済みの最新入力番号
     //      f=[コタロ, ルミポ] それぞれ [x, y, vx, vy, 向き(±1), フラグ, 無敵の残り秒]
     //      フラグ = 1:場にいる / 2:接地 / 4〜16:状態 / 32:ヒットストップ中 / 64:被弾硬直中 / 128:今の技がクラゲ電撃（Phase 6）/ 256:今の技がバブルショット（Phase 7）/ 512:ガード中（出始め・有効）/ 1024:ガード硬直中（Phase 8）
+    //      f の [10] 残りストック / [11] KO 回数（命の番号）（Phase 9）。r（Phase 9・省略時 0）= 試合結果（mk の r と同じ）
     //      b（Phase 7）= 場にある泡 [Projectile ID, 発射した側(0=コタロ,1=ルミポ), x, y, 向き(±1), 発射からのステップ数, 攻撃 ID]（最大 4 個）
     st: (m) => {
       if (!(isInt(m.s, 1, BIG) && isNum(m.h, 0, TIME_MAX) && isNum(m.w, 0, TIME_MAX) && isInt(m.a, 0, BIG))) return null;
+      if (m.r !== undefined && !isInt(m.r, 0, 3)) return null;   // Phase 9
       if (!Array.isArray(m.f) || m.f.length !== 2) return null;
       const f = [];
       for (const e of m.f) {
-        if (!Array.isArray(e) || e.length !== 10) return null;
+        if (!Array.isArray(e) || e.length !== 12) return null;
         if (!(isNum(e[0], -POS_MAX, POS_MAX) && isNum(e[1], -POS_MAX, POS_MAX) && isNum(e[2], -VEL_MAX, VEL_MAX) && isNum(e[3], -VEL_MAX, VEL_MAX))) return null;
         if (!(e[4] === 1 || e[4] === -1) || !isInt(e[5], 0, 2047) || !isNum(e[6], 0, 60)) return null;
         // Phase 4：[7] ダメージ / [8] 技のフレーム（-1 = なし）/ [9] 傾き
         if (!isNum(e[7], 0, 999) || !isInt(e[8], -1, 120) || !isNum(e[9], -1000, 1000)) return null;
-        f.push(e.slice(0, 10));
+        // Phase 9：[10] 残りストック / [11] KO 回数
+        if (!isInt(e[10], 0, 99) || !isInt(e[11], 0, 999)) return null;
+        f.push(e.slice(0, 12));
       }
       // p（Phase 3）= ルミポの移動に関わる値 [x, y, vx, vy, 向き, 接地, 空中ジャンプ残り, コヨーテ残り, ジャンプ先行入力残り, 技中のジャンプ保留, 小ジャンプ可, 吹っ飛び中]
       const p = m.p;
@@ -145,7 +153,7 @@
           b.push(e.slice());
         }
       }
-      return { t: 'st', s: m.s, h: m.h, w: m.w, a: m.a, f, p: p.slice(), b };
+      return { t: 'st', s: m.s, h: m.h, w: m.w, a: m.a, f, p: p.slice(), b, r: m.r || 0 };
     },
   };
 
