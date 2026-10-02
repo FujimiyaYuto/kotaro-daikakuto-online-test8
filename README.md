@@ -11,6 +11,7 @@
 > Online Phase 8 =「既存のガードをオンライン化（押している状態を送り、成立は HOST が判定）」。
 > Online Phase 9 =「KO・3 ストック・リスポーン・無敵・勝敗の同期（すべて HOST authoritative）」。1 試合を最後まで遊べる。
 > Online Phase 10 =「READY → 3 / 2 / 1 / START! → 対戦 → 勝敗 → 再戦」を同じ接続のまま何試合でも続けられる。
+> Online Phase 10.1 = HIT が出るまでの体感の遅れを計測（`docs/ONLINE_PHASE10_1.md`）。命中・ガードのステップは状態をすぐ送る（GUEST の被弾の見た目が約 16ms 早く）。診断に「見た目の接触→HIT」と fps。
 
 ## オンライン実験（Online Phase 1）
 タイトル →「オンライン実験 TEST」→「ルームを作る」/「ルームに参加」
