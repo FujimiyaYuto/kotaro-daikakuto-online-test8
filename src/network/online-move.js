@@ -679,7 +679,7 @@
           pressSent: 0, predStarted: 0, accepted: 0, hostRejectedPred: 0, hits: 0, misses: 0,
           matrix: { vv: 0, vm: 0, mv: 0, mm: 0 }, matrixCur: { vv: 0, vm: 0, mv: 0, mm: 0 },
           dKotaro: new Samples(), dKotaroPast: new Samples(), gRewind: new Samples(),
-          keyToPred: new Samples(), acceptRtt: new Stat(), hitShow: new Stat(), hitRecv: 0,
+          keyToPred: new Samples(), acceptRtt: new Stat(), hitShow: new Stat(), hitRecv: 0, contactToHit: new Samples(),
         })),
         disp: [null, null],
         // Phase 7：泡（HOST）[0] コタロ / [1] ルミポ。dead = 消えた理由ごと [命中, 地形, 寿命, 場外, その他]
@@ -767,7 +767,10 @@
       this.trackHostAttacks();
       this.flushHostKOs();
       this.trackHostLifecycle();
-      if (st.stepCount % CFG.stateEverySteps === 0) this.sendState();
+      // Phase 10.1：命中・ガードがあったステップは、30Hz の順番を待たずにそのステップの状態をすぐ送る
+      //   （GUEST の被弾 / ガードの見た目・ヒットストップ・吹っ飛びは状態で届くため、命中イベントから最大 1 ステップ待っていた）
+      if (st.stepCount % CFG.stateEverySteps === 0 || st.hitThisStep) this.sendState();
+      st.hitThisStep = false;
     }
 
     // ---------------- Phase 10：ロビー（READY）と試合の流れ ----------------
@@ -1102,6 +1105,7 @@
       const attacker = gd.attacker;
       const ai = attacker === g.player ? 0 : attacker === g.cpu ? 1 : -1;
       if (ai < 0) return;
+      st.hitThisStep = true;   // Phase 10.1
       const vi = victim === g.player ? 0 : 1;
       st.gd[vi].guard++;
       let k = 0, pid;
@@ -1124,6 +1128,7 @@
       const attacker = hit.attacker;
       const ai = attacker === g.player ? 0 : attacker === g.cpu ? 1 : -1;
       if (ai < 0) return;
+      st.hitThisStep = true;   // Phase 10.1
       // Phase 8：通常 HIT の数と、ガードを押していたのに HIT になった理由（背面 / 出始め 3F / 空中）
       if (pre) {
         const G = st.gd[victim === g.player ? 0 : 1];
@@ -1536,7 +1541,11 @@
       victim.status.damage = m.d;
       st.flash[m.a === 0 ? 1 : 0] = 0.18;
       if (m.a === 0) st.hitPending = true;        // 自分（ルミポ）が被弾：次の作り直しは HOST の被弾結果を優先
-      if (m.a === 1) { const rec = st.predAttacks.get(m.k); if (rec) rec.hostHit = true; }
+      if (m.a === 1) {
+        const rec = st.predAttacks.get(m.k);
+        if (rec) rec.hostHit = true;
+        if (rec && rec.visAt) G.contactToHit.add(now() - rec.visAt);   // Phase 10.1（診断）：自分の画面で触れて見えてから HIT が届くまで
+      }
       // 命中の見た目・音は既存のもの（クラゲ電撃は電撃のヒット演出 'shock' と電撃音を重ねる）。命中番号ごとに 1 回だけ
       if (kind === 2) {   // Phase 7：泡の命中。音は既存の軽い命中音、見た目は泡が弾ける演出（消滅イベント pe で 1 回）
         st.gb.hits++;
@@ -1933,7 +1942,7 @@
           if (!rec.measured) { rec.measured = g.player.status.isAlive; rec.kxDisp = g.player.x; rec.rxDisp = fi.x; }
           if (g.player.status.isAlive) {
             const hurt = g.player.getHurtboxes();
-            for (const hb of hbs) for (const hu of hurt) if (KG.util.rectsOverlap(hb.rect, hu)) rec.visHit = true;
+            for (const hb of hbs) for (const hu of hurt) if (KG.util.rectsOverlap(hb.rect, hu)) { rec.visHit = true; if (!rec.visAt) rec.visAt = now(); }   // Phase 10.1：見た目の接触の時刻
           }
         }
       }
@@ -2200,7 +2209,7 @@
       const name = (i) => KIND_NAMES[i] + '　'.repeat(5 - KIND_NAMES[i].length);   // 全角 5 文字分にそろえる
       const mx = (m) => m.vv + '/' + m.vm + '/' + m.mv + '/' + m.mm;
       const pct = (a, b) => b ? Math.round((a / b) * 100) + '%' : '-';
-      const lines = ['PING ' + ms(p.last) + '  avg ' + ms(s.pingAvg) + '  (min ' + ms(p.min) + ' / max ' + ms(p.max) + ')'];
+      const lines = ['PING ' + ms(p.last) + '  avg ' + ms(s.pingAvg) + '  (min ' + ms(p.min) + ' / max ' + ms(p.max) + ')' + '  fps ' + Math.round(KG.game.fps || 0)];   // Phase 10.1：fps（実機で描画の遅れが無いかの目安）
       if (this.role === 'HOST') {
         const r = this.remote;
         const L = r.last;
@@ -2250,9 +2259,10 @@
           lines.push(name(i) + P(G.pressSent, 4) + P(G.predStarted, 5) + P(G.accepted, 5) + P(G.hostRejectedPred, 5) + P(G.hits, 5) + P(G.misses, 5) + ' │ ' +
             (mx(G.matrix) + ' HIT→MISS ' + pct(G.matrix.vm, G.matrix.vv + G.matrix.vm)).padEnd(22) + '│ ' + mx(G.matrixCur) + ' HIT→MISS ' + pct(G.matrixCur.vm, G.matrixCur.vv + G.matrixCur.vm));
         });
-        lines.push('時間        押す→予測 押す→発動確認 HIT→表示 │ 位置の差 画面−今 / 画面−補償の参照（巻き戻し）');
+        lines.push('時間        押す→予測 押す→発動確認 HIT→表示 見た目の接触→HIT │ 位置の差 画面−今 / 画面−補償の参照（巻き戻し）');
         st.gk.slice(0, 2).forEach((G, i) => {
-          lines.push(name(i) + P(ms(G.keyToPred.mean), 8) + P(ms(G.acceptRtt.avg), 13) + P(ms(G.hitShow.avg), 9) + ' │ ' + P(num(G.dKotaro.mean), 6) + ' / ' + num(G.dKotaroPast.mean) + '（' + num(G.gRewind.mean) + 'ms）');
+          lines.push(name(i) + P(ms(G.keyToPred.mean), 8) + P(ms(G.acceptRtt.avg), 13) + P(ms(G.hitShow.avg), 9) + P(ms(G.contactToHit.median), 13) + '（max ' + ms(G.contactToHit.max) + '）' +
+            ' │ ' + P(num(G.dKotaro.mean), 6) + ' / ' + num(G.dKotaroPast.mean) + '（' + num(G.gRewind.mean) + 'ms）');
         });
         const gb = st.gb, f1 = (v) => v == null ? '-' : v.toFixed(1);
         lines.push('バブル  入力 ' + st.gk[2].pressSent + ' 予測発射 ' + gb.predSpawned + ' 引継ぎ ' + gb.linked + ' 破棄 ' + gb.discarded + ' 予測なし ' + gb.hostOnly +
