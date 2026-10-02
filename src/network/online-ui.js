@@ -40,8 +40,8 @@
   // 操作実験中にゲームへ渡さないキー（R = 開発用リセット / Enter / ガード）。Phase 4 から J（ぽよん）、Phase 6 から K（電撃）、Phase 7 から L（泡）は通す
   const TEST_BLOCKED_KEYS = new Set(['KeyR', 'Enter', 'NumpadEnter', 'Escape']);   // Phase 8 から I（ガード）も通す。Phase 9：勝敗表示の Esc（タイトルへ）も止める
   const MOVE_END_TEXT = {
-    'user': '操作実験を終了しました。',
-    'remote-user': '相手が操作実験を終了しました。',
+    'user': '対戦を終了しました。',
+    'remote-user': '相手が対戦を終了しました。',
     'remote-timeout': '開始できませんでした（相手の応答なし）。',
     'remote-error': '相手側でエラーが起きたため終了しました。',
   };
@@ -98,11 +98,12 @@
       <!-- Online Phase 2：遠隔プレイヤーによるキャラクター操作実験 -->
       <div class="ol-move" hidden>
         <div class="ol-move-text">
-          <strong>操作実験（Online Phase 2）</strong>
+          <strong>オンライン対戦（3ストック）</strong>
+          <span class="ol-ready-state"></span>
           <span class="ol-move-sub"></span>
           <span class="ol-move-note" hidden></span>
         </div>
-        <button type="button" class="menu-btn primary ol-move-btn" data-act="move-start">操作実験を開始</button>
+        <button type="button" class="menu-btn primary ol-move-btn" data-act="move-start">READY</button>
       </div>
 
       <div class="ol-grid">
@@ -173,6 +174,7 @@
         onStartFailed: () => { this.moveNote = 'GUESTから応答がなかったため開始できませんでした。もう一度お試しください。'; this.render(); },
         onStart: () => this.enterTest(),
         onStop: (reason, wasActive) => this.exitTest(reason, wasActive),
+        onLobby: () => { if (this.isOpen && this.view === 'session') this.render(); },   // Phase 10：READY の状態が変わった
       });
       window.addEventListener('pagehide', () => { if (this.session.active) this.session.close('unload'); });
     }
@@ -200,7 +202,7 @@
         progressText: q('.ol-progress-text'), burstResult: q('.ol-burst-result'), burstIn: q('.ol-burst-in'),
         log: q('.ol-log'),
         disconnect: q('[data-act="disconnect"]'), backMenu: q('.ol-actions [data-act="menu"]'),
-        move: q('.ol-move'), moveBtn: q('.ol-move-btn'), moveSub: q('.ol-move-sub'), moveNote: q('.ol-move-note'),
+        move: q('.ol-move'), moveBtn: q('.ol-move-btn'), moveSub: q('.ol-move-sub'), moveNote: q('.ol-move-note'), readyState: q('.ol-ready-state'),
       };
 
       // 診断の行（値だけを後で書き換える）
@@ -377,8 +379,8 @@
           }
           this.render();
           break;
-        case 'move-start':
-          if (this.move.requestStart()) this.sfx('confirm');
+        case 'move-start':   // Phase 10：READY の切り替え（両方が READY になったら HOST が試合を始める）
+          if (this.move.setReady(!this.move.lobby.me)) { this.sfx(this.move.lobby.me ? 'confirm' : 'back'); this.moveNote = ''; }
           this.render();
           break;
         case 'copy-code':
@@ -552,17 +554,26 @@
       setText($.burstBtn, running ? '連続通信テスト中…' : '連続通信テスト開始');
       if (!running && !this.lastBurst) $.progress.hidden = true;
 
-      // 操作実験（Phase 2）：接続中だけ。開始ボタンは HOST だけ
+      // 対戦（Phase 2 の操作実験 → Phase 10 で READY）：接続中だけ。両方が READY を押すと HOST が試合を始める
       const mv = this.move;
       $.move.hidden = !connected;
       if (connected) {
         const starting = !!(mv && mv.starting);
-        $.moveBtn.hidden = s.role !== 'HOST';
+        const L = mv.lobby, host = s.role === 'HOST';
+        $.moveBtn.hidden = false;
         $.moveBtn.disabled = starting;
-        setText($.moveBtn, starting ? '相手の準備を待っています…' : '操作実験を開始');
-        setText($.moveSub, s.role === 'HOST'
-          ? '押すと両方の画面がゲーム画面になります。あなた＝コタロ（いつもの操作）、相手＝ルミポ（相手の入力で動きます）。攻撃はぽよんアタック（J）・クラゲ電撃（K）・バブルショット（L）、ガード（I）が使えます。'
-          : 'HOSTが「操作実験を開始」を押すとゲーム画面に切り替わります。あなたはルミポを左右移動・ジャンプ・ぽよんアタック（J）・クラゲ電撃（K）・バブルショット（L）・ガード（I）で操作します。');
+        $.moveBtn.classList.toggle('is-ready', L.me);
+        setText($.moveBtn, starting ? '開始しています…' : L.me ? 'READY を取り消す' : 'READY');
+        // 両方の状態（GUEST の自分の値は HOST が確認するまで「確認中」）
+        const tag = (on) => '<span class="' + (on ? 'is-ready">READY' : 'not-ready">NOT READY') + '</span>';
+        const hostOn = host ? L.me : L.peer, guestOn = host ? L.peer : L.me;
+        const wait = !host && L.me !== L.meHost ? '（確認中）' : '';
+        const html = 'HOST：' + tag(hostOn) + '　GUEST：' + tag(guestOn) + wait;
+        if ($.readyState.innerHTML !== html) $.readyState.innerHTML = html;   // 固定の文言だけ（相手からの文字列は入れない）
+        setText($.moveSub, (host
+          ? 'あなた＝コタロ、相手＝ルミポ。'
+          : 'あなた＝ルミポ、相手＝コタロ。') +
+          '両方が READY を押すと 3 / 2 / 1 / START! で試合が始まります（3 ストック）。操作：移動・ジャンプ・ぽよんアタック（J）・クラゲ電撃（K）・バブルショット（L）・ガード（I）。');
       }
       $.moveNote.hidden = !this.moveNote;
       setText($.moveNote, this.moveNote);

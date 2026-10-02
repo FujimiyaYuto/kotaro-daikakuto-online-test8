@@ -475,7 +475,22 @@ body.is-touch[data-online-test="guest"] #ol-pad { display: block; }
 .olp-gd small { display: block; margin-top: 3px; font-size: 11px; letter-spacing: 0.08em; }
 .olp-gd.pressed > span { transform: scale(0.92); background: radial-gradient(circle at 35% 28%, rgba(240, 255, 255, 0.9), rgba(150, 230, 255, 0.78) 55%, rgba(70, 150, 200, 0.82)); }
 
-/* Phase 9：オンライン実験の勝敗表示。既存の「もう一度」「タイトルへ戻る」は使わない（終了は「実験を終了」）*/
-.ko-online-note { display: none; }
+/* Phase 9 / 10：オンライン実験の勝敗表示。既存の「もう一度」「タイトルへ戻る」の代わりに、再戦（両方が押したら次の試合）と終了 */
+.ko-online { display: none; }
 body[data-online-test] #ko-overlay .ko-actions { display: none !important; }
-body[data-online-test] #ko-overlay .ko-online-note { display: block; font-size: 13px; opacity: 0.85; }
+body[data-online-test] #ko-overlay .ko-online { display: grid; gap: 8px; justify-items: center; }
+.ko-online-status { margin: 0; min-height: 1.4em; font-size: 14px; color: #ffe2bd; }
+.ko-online-actions { display: flex; gap: 12px; justify-content: center; }
+.ko-online-actions .menu-btn { font-size: 16px; }
+.ko-online-actions .menu-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Phase 10：接続画面の READY（両方の状態） */
+.ol-ready-state { font-size: 14px; font-weight: 700; letter-spacing: 0.04em; }
+.ol-ready-state .is-ready { color: #8dffb5; }
+.ol-ready-state .not-ready { color: #ffb4a8; }
+.ol-move-btn.is-ready { background: rgba(16, 80, 52, 0.85); border-color: rgba(111, 240, 160, 0.95); }
+
+/* Phase 10：プレイヤー向けの表示（カウントダウン・勝敗と再戦ボタン）は診断パネル（#ol-move-hud）より手前に出す */
+body[data-online-test] #countdown,
+body[data-online-test] #ko-overlay { z-index: 8; }
+body[data-online-test] #ko-overlay .ko-online-actions .menu-btn { pointer-events: auto; }
