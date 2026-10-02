@@ -494,3 +494,72 @@ body[data-online-test] #ko-overlay .ko-online { display: grid; gap: 8px; justify
 body[data-online-test] #countdown,
 body[data-online-test] #ko-overlay { z-index: 8; }
 body[data-online-test] #ko-overlay .ko-online-actions .menu-btn { pointer-events: auto; }
+
+/* =====================================================================
+   Online Phase 11：一般向けのオンライン対戦画面（開発用の表示は「詳細」の中へ）
+   ===================================================================== */
+.ol-kicker { margin: 0 0 2px; font-size: 13px; font-weight: 800; letter-spacing: 0.18em; color: #8fe3ff; opacity: 0.9; }
+.ol-head .ol-title { font-size: clamp(24px, 5.4vmin, 36px); text-shadow: 0 0 18px rgba(143, 227, 255, 0.55); }
+.ol-menu .menu-btn.primary { min-height: 56px; font-size: 18px; }
+.ol-join-hint { margin: -4px 0 0; text-align: center; font-size: 12px; opacity: 0.8; }
+
+/* ルームコード：大きく・選択できる */
+.ol-room { flex-direction: column; gap: 6px; padding: 14px 18px; text-align: center; }
+.ol-room-code { font-size: clamp(38px, 11vmin, 68px); line-height: 1.1; padding: 0 6px; }
+.ol-room-hint { font-size: 14px; opacity: 0.9; }
+.ol-copy { min-height: 44px; min-width: 150px; font-size: 16px; }
+
+/* 準備（READY）：あなた / 相手 の 2 枚と大きなボタン */
+.ol-move { flex-direction: column; justify-content: center; text-align: center; }
+.ol-ready-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: min(460px, 100%); }
+.ol-rc {
+  display: grid; gap: 2px; padding: 8px 10px; border-radius: 14px;
+  background: rgba(5, 20, 40, 0.55); border: 1.5px solid rgba(200, 225, 255, 0.35);
+}
+.ol-rc-name { font-size: 13px; opacity: 0.85; }
+.ol-rc-state { font-size: 20px; font-weight: 800; color: #ffd0c4; }
+.ol-rc.is-ready { border-color: rgba(111, 240, 160, 0.95); box-shadow: 0 0 14px rgba(111, 240, 160, 0.35); }
+.ol-rc.is-ready .ol-rc-state { color: #8dffb5; }
+.ol-move-sub { margin: 0; font-size: 14px; opacity: 0.92; }
+.ol-move-note { margin: 0; }
+.ol-move-btn { min-width: 240px; min-height: 56px; font-size: 20px; }
+
+/* 開発用の詳細（通常は閉じている） */
+.ol-devbar { display: flex; justify-content: flex-end; }
+.ol-devbar .ol-mini { opacity: 0.6; }
+.ol-dev { display: grid; gap: 10px; }
+.ol-dev[hidden] { display: none; }
+.ol-dev-role { margin: 0; font-size: 13px; }
+.ol-dev .ol-role { padding: 0 8px; font-size: 13px; letter-spacing: 0.06em; }
+
+/* 対戦中：接続の状態（小さな丸）・詳細・退出だけ。診断を開いた時だけ開発用の行と数値 */
+#ol-move-hud.diag-off .olm-dev { display: none; }
+.olm-dev { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
+.olm-conn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
+  background: rgba(0, 10, 28, 0.45); font-size: 11px; font-weight: 700; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.olm-conn i { width: 8px; height: 8px; border-radius: 50%; background: #6ff0a0; box-shadow: 0 0 6px #6ff0a0; }
+.olm-conn[data-kind="warn"] i { background: #ffc35a; box-shadow: 0 0 6px #ffc35a; }
+.olm-conn[data-kind="warn"] { color: #ffe0a0; }
+#ol-move-hud .olm-btn { opacity: 0.8; }
+#ol-move-hud .olm-end.is-armed { opacity: 1; border-color: #ffb4a8; background: rgba(110, 30, 30, 0.85); }
+#ol-move-hud.diag-off { width: auto; }
+
+/* 勝敗表示：自分から見た結果と、大きめの「再戦」「退出」 */
+.ko-online-outcome { margin: 0; font-size: 18px; font-weight: 800; color: #eafcff; }
+.ko-online-actions .menu-btn { min-width: 128px; min-height: 48px; font-size: 17px; }
+
+/* 横向きスマホ（背が低い画面）：詰めて 1 画面に収める */
+@media (max-height: 540px) {
+  .ol-head .ol-title { font-size: 24px; }
+  .ol-kicker { display: none; }
+  .ol-room { padding: 8px 14px; gap: 2px; }
+  .ol-room-code { font-size: clamp(32px, 12vh, 52px); }
+  .ol-ready-cards { gap: 8px; }
+  .ol-rc { padding: 5px 8px; }
+  .ol-rc-state { font-size: 17px; }
+  .ol-move-btn { min-height: 48px; }
+  .ko-online-outcome { font-size: 16px; }
+}
+@media (max-height: 540px) { .ol-head .ol-sub { display: block; margin-top: 0; } }

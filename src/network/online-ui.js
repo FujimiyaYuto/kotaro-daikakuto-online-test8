@@ -1,5 +1,9 @@
 /*
- * online-ui.js — オンライン実験（Online Phase 1）の画面
+ * online-ui.js — オンライン対戦の画面（Online Phase 1 の実験画面 → Phase 11 で一般向けに整理）
+ *
+ * Phase 11：画面に出すのは「ルームを作る / ルームに参加 → ルームコード → 対戦相手を待つ → 準備（READY）」だけ。
+ *   通信テスト・連続通信テスト・診断・通信ログ（開発用）は消さずに「詳細」ボタンの中へ（通常は閉じている）。
+ *   接続・READY・試合の処理は今までどおり NetSession / OnlineMoveTest を呼ぶだけ（ネットコードは変更しない）。
  *
  * タイトル画面の「オンライン実験」ボタンから開く、ゲームとは独立したオーバーレイ画面です。
  *   メニュー（ルームを作る / ルームに参加 / 戻る）→ 接続画面（状態・診断・通信テスト・連続通信テスト・通信ログ）
@@ -17,21 +21,21 @@
 
   // 画面に出す文言（内部の理由コード → 日本語）
   const REASON_TEXT = {
-    'user': '切断しました。',
+    'user': '退出しました。',
     'unload': 'ページを離れました。',
-    'remote-bye': '相手が切断しました。',
-    'remote-closed': '相手との通信が切れました。',
-    'timeout': '相手からの応答がなくなりました（ページを閉じた・回線が切れた可能性があります）。',
-    'ice-failed': '相手と直接つながれませんでした。回線やルーターの設定によっては接続できない場合があります。別の回線（Wi-Fi／モバイル回線）でもお試しください。',
-    'peer-unavailable': 'ルームが見つかりません。コードが正しいか、ホストがルームを開いたままか確認してください。',
-    'server': '接続サーバーにつながりませんでした。ネットワーク接続を確認して、少し待ってからお試しください。',
-    'browser': 'このブラウザは通信機能（WebRTC）に対応していないようです。',
+    'remote-bye': '対戦相手が退出しました。',
+    'remote-closed': '対戦相手との接続が切れました。',
+    'timeout': '対戦相手からの応答がなくなりました（ページを閉じた・回線が切れた可能性があります）。',
+    'ice-failed': '対戦相手とつながれませんでした。回線によっては接続できない場合があります。別の回線（Wi-Fi／モバイル回線）でもお試しください。',
+    'peer-unavailable': 'ルームが見つかりません。ルームコードを確認して、もう一度お試しください。',
+    'server': '接続できませんでした。ネットワーク接続を確認して、少し待ってからお試しください。',
+    'browser': 'このブラウザはオンライン対戦に対応していないようです。別のブラウザでお試しください。',
     'id-exhausted': 'ルームコードを作れませんでした。もう一度お試しください。',
     'reject-full': 'このルームにはすでに他の人が参加しています。',
     'reject-version': 'ゲームのバージョンが違うため接続できません。両方のページを再読み込みしてください。',
-    'handshake-timeout': '相手から応答がありませんでした。',
-    'connect-timeout': '時間内に接続できませんでした。コードを確認して、もう一度お試しください。',
-    'no-peerjs': '通信ライブラリを読み込めませんでした。ネットワーク接続を確認して、ページを再読み込みしてください。',
+    'handshake-timeout': '対戦相手から応答がありませんでした。もう一度お試しください。',
+    'connect-timeout': '接続できませんでした。ルームコードを確認して、もう一度お試しください。',
+    'no-peerjs': '通信の準備ができませんでした。ネットワーク接続を確認して、ページを再読み込みしてください。',
     'error': '接続中にエラーが発生しました。',
   };
   const SIGNAL_TEXT = { '-': '-', connecting: '接続中…', open: '接続済み', disconnected: '切断（データ通信は継続）', closed: '終了', error: 'エラー' };
@@ -40,10 +44,10 @@
   // 操作実験中にゲームへ渡さないキー（R = 開発用リセット / Enter / ガード）。Phase 4 から J（ぽよん）、Phase 6 から K（電撃）、Phase 7 から L（泡）は通す
   const TEST_BLOCKED_KEYS = new Set(['KeyR', 'Enter', 'NumpadEnter', 'Escape']);   // Phase 8 から I（ガード）も通す。Phase 9：勝敗表示の Esc（タイトルへ）も止める
   const MOVE_END_TEXT = {
-    'user': '対戦を終了しました。',
-    'remote-user': '相手が対戦を終了しました。',
-    'remote-timeout': '開始できませんでした（相手の応答なし）。',
-    'remote-error': '相手側でエラーが起きたため終了しました。',
+    'user': '',
+    'remote-user': '対戦相手が退出しました。',
+    'remote-timeout': '開始できませんでした（対戦相手の応答なし）。もう一度 READY を押してください。',
+    'remote-error': '対戦相手の画面でエラーが起きたため終了しました。',
   };
   const KEY_TO_TEST = { KeyA: 'LEFT', ArrowLeft: 'LEFT', KeyD: 'RIGHT', ArrowRight: 'RIGHT', Space: 'JUMP' };
 
@@ -53,8 +57,9 @@
   const TEMPLATE = `
   <div class="ol-panel">
     <header class="ol-head">
-      <h2 class="ol-title">オンライン実験 <span class="ol-tag">TEST</span></h2>
-      <p class="ol-sub">2つのブラウザをつなぐ通信テストです。対戦はまだできません。</p>
+      <p class="ol-kicker">コタロの大格闘</p>
+      <h2 class="ol-title">オンライン対戦</h2>
+      <p class="ol-sub">2人用オンライン対戦</p>
     </header>
 
     <div class="ol-view" data-view="menu">
@@ -63,12 +68,13 @@
         <button type="button" class="menu-btn primary" data-act="join-view">ルームに参加</button>
         <button type="button" class="menu-btn ghost" data-act="exit">戻る</button>
       </div>
-      <p class="ol-note">通信には PeerJS の公開サーバー（接続の仲介のみ）を使います。アカウント登録は不要です。</p>
+      <p class="ol-note">ルームを作った人がコードを相手に教え、相手は「ルームに参加」でそのコードを入力します。アカウント登録は不要です。</p>
     </div>
 
     <div class="ol-view" data-view="join" hidden>
       <form class="ol-join" novalidate>
-        <label class="ol-label" for="ol-code">ルームコード（4桁の数字）</label>
+        <label class="ol-label" for="ol-code">ルームコードを入力</label>
+        <p class="ol-join-hint">「KOTA-」のあとの 4 桁の数字を入力してください</p>
         <div class="ol-code-input">
           <span class="ol-code-prefix" aria-hidden="true">KOTA-</span>
           <input id="ol-code" name="code" type="text" inputmode="numeric" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="3812">
@@ -76,7 +82,7 @@
         <p class="ol-error" aria-live="polite"></p>
         <div class="ol-row">
           <button type="button" class="menu-btn ghost" data-act="menu">戻る</button>
-          <button type="submit" class="menu-btn primary" data-act="join">接続</button>
+          <button type="submit" class="menu-btn primary" data-act="join">参加する</button>
         </div>
       </form>
     </div>
@@ -85,27 +91,37 @@
       <div class="ol-status" data-kind="busy" aria-live="polite">
         <span class="ol-dot" aria-hidden="true"></span>
         <span class="ol-status-text"></span>
-        <span class="ol-role" hidden></span>
       </div>
       <p class="ol-status-detail"></p>
 
+      <!-- ルームを作った人：ルームコード（大きく・選択してコピーもできる） -->
       <div class="ol-room" hidden>
         <span class="ol-room-label">ルームコード</span>
         <strong class="ol-room-code"></strong>
-        <button type="button" class="ol-mini" data-act="copy-code">コピー</button>
+        <span class="ol-room-hint">このコードを対戦相手に教えてください</span>
+        <button type="button" class="menu-btn ol-copy" data-act="copy-code">コピー</button>
       </div>
 
-      <!-- Online Phase 2：遠隔プレイヤーによるキャラクター操作実験 -->
+      <!-- 接続後：準備（READY）。両方が準備 OK で試合開始（Phase 10 の READY） -->
       <div class="ol-move" hidden>
-        <div class="ol-move-text">
-          <strong>オンライン対戦（3ストック）</strong>
-          <span class="ol-ready-state"></span>
-          <span class="ol-move-sub"></span>
-          <span class="ol-move-note" hidden></span>
+        <div class="ol-ready-cards">
+          <div class="ol-rc" data-who="me"><span class="ol-rc-name"></span><span class="ol-rc-state"></span></div>
+          <div class="ol-rc" data-who="peer"><span class="ol-rc-name"></span><span class="ol-rc-state"></span></div>
         </div>
-        <button type="button" class="menu-btn primary ol-move-btn" data-act="move-start">READY</button>
+        <p class="ol-move-sub"></p>
+        <p class="ol-move-note" hidden></p>
+        <button type="button" class="menu-btn primary big ol-move-btn" data-act="move-start">READY</button>
       </div>
 
+      <div class="ol-actions">
+        <button type="button" class="menu-btn ghost" data-act="disconnect">退出</button>
+        <button type="button" class="menu-btn primary" data-act="menu" hidden>オンライン対戦メニューへ戻る</button>
+      </div>
+
+      <!-- 開発用（通常は閉じている）：役割・通信テスト・連続通信テスト・診断・通信ログ -->
+      <div class="ol-devbar"><button type="button" class="ol-mini" data-act="dev" aria-expanded="false">詳細</button></div>
+      <div class="ol-dev" hidden>
+        <p class="ol-dev-role">役割：<span class="ol-role">-</span></p>
       <div class="ol-grid">
         <section class="ol-card ol-test" aria-label="通信テスト">
           <h3>通信テスト</h3>
@@ -144,10 +160,6 @@
           <ol class="ol-log"></ol>
         </section>
       </div>
-
-      <div class="ol-actions">
-        <button type="button" class="menu-btn ghost" data-act="disconnect">切断</button>
-        <button type="button" class="menu-btn primary" data-act="menu" hidden>メニューへ戻る</button>
       </div>
     </div>
   </div>`;
@@ -175,6 +187,7 @@
         onStart: () => this.enterTest(),
         onStop: (reason, wasActive) => this.exitTest(reason, wasActive),
         onLobby: () => { if (this.isOpen && this.view === 'session') this.render(); },   // Phase 10：READY の状態が変わった
+        onQuit: () => this.quitToMenu(),   // Phase 11：対戦中・勝敗表示の「退出」→ 対戦を終えて接続も閉じ、オンライン対戦メニューへ
       });
       window.addEventListener('pagehide', () => { if (this.session.active) this.session.close('unload'); });
     }
@@ -186,7 +199,7 @@
       el.id = 'online-screen';
       el.className = 'online-screen';
       el.hidden = true;
-      el.setAttribute('aria-label', 'オンライン実験');
+      el.setAttribute('aria-label', 'オンライン対戦');
       el.innerHTML = TEMPLATE;   // 固定の文言のみ（相手からのデータは入れない）
       root.appendChild(el);
 
@@ -202,7 +215,9 @@
         progressText: q('.ol-progress-text'), burstResult: q('.ol-burst-result'), burstIn: q('.ol-burst-in'),
         log: q('.ol-log'),
         disconnect: q('[data-act="disconnect"]'), backMenu: q('.ol-actions [data-act="menu"]'),
-        move: q('.ol-move'), moveBtn: q('.ol-move-btn'), moveSub: q('.ol-move-sub'), moveNote: q('.ol-move-note'), readyState: q('.ol-ready-state'),
+        move: q('.ol-move'), moveBtn: q('.ol-move-btn'), moveSub: q('.ol-move-sub'), moveNote: q('.ol-move-note'),
+        rcMe: q('.ol-rc[data-who="me"]'), rcPeer: q('.ol-rc[data-who="peer"]'),
+        dev: q('.ol-dev'), devBtn: q('[data-act="dev"]'),
       };
 
       // 診断の行（値だけを後で書き換える）
@@ -305,6 +320,14 @@
       }
     }
 
+    // Phase 11：退出（対戦を既存の終了処理 me で終え、既存の close で相手に知らせて接続を閉じ、オンライン対戦メニューへ）
+    quitToMenu() {
+      if (this.move.active || this.move.starting) this.move.end();
+      this.session.close('user');
+      this.moveNote = '';
+      if (this.isOpen) { this.el.hidden = false; document.body.dataset.online = 'open'; this.showView('menu'); }
+    }
+
     exit() {
       this.session.close('user');      // 接続を残さない（Peer / DataConnection を閉じる）
       this.isOpen = false;
@@ -348,7 +371,7 @@
           const code = P.parseCode(this.$.input.value);
           if (!code) {
             this.sfx('back');
-            this.$.joinError.textContent = '4桁の数字を入力してください（例：3812）';
+            this.$.joinError.textContent = 'ルームコードの 4 桁の数字を入力してください（例：KOTA-3812 なら 3812）';
             return;
           }
           this.sfx('confirm');
@@ -367,10 +390,18 @@
           this.sfx('back');
           this.exit();
           break;
-        case 'disconnect':
+        case 'disconnect':   // Phase 11：「退出」「やめる」→ 接続を閉じてオンライン対戦メニューへ
           this.sfx('back');
-          s.close('user');
+          this.quitToMenu();
           break;
+        case 'dev': {        // Phase 11：開発用の詳細（通信テスト・診断・ログ）の開閉
+          const open = this.$.dev.hidden;
+          this.$.dev.hidden = !open;
+          this.$.devBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          setText(this.$.devBtn, open ? '詳細を閉じる' : '詳細');
+          if (open) { this.render(); this.renderLog(); }
+          break;
+        }
         case 'burst':
           if (s.startBurst()) {
             this.sfx('select');
@@ -456,7 +487,7 @@
         }
         if (inInput) return;   // 入力欄の文字入力・Enter（送信）はそのまま
         const test = KEY_TO_TEST[e.code];
-        if (test && this.view === 'session') {
+        if (test && this.view === 'session' && !this.$.dev.hidden) {
           e.preventDefault();      // Space のスクロール・ボタン誤押下を防ぐ
           if (!e.repeat) this.sendTest(test);
         }
@@ -497,30 +528,30 @@
       const st = s.state;
       let text = '', kind = 'busy', detail = '';
       switch (st) {
-        case 'idle': text = '接続待機中'; break;
-        case 'creating': text = 'ルームを作成しています…'; break;
-        case 'waiting': text = '接続待機中'; kind = 'wait'; detail = '参加する人に下のルームコードを伝えてください。'; break;
-        case 'connecting': text = '接続しています…'; detail = s.role === 'HOST' ? '参加者を確認しています。' : 'ルーム ' + s.displayCode + ' へ接続しています。'; break;
+        case 'idle': text = '準備しています…'; break;
+        case 'creating': text = 'ルームを作っています…'; break;
+        case 'waiting': text = '対戦相手を待っています…'; kind = 'wait'; break;
+        case 'connecting': text = s.role === 'HOST' ? '対戦相手が参加しようとしています…' : '接続しています…'; break;
         case 'connected':
-          text = '接続しました'; kind = s.isStale ? 'warn' : 'ok';
-          detail = s.isStale ? '相手からの応答が遅れています…' : '接続成功。通信テストができます。';
+          text = s.isStale ? '通信が不安定です…' : '対戦相手と接続しました！'; kind = s.isStale ? 'warn' : 'ok';
           break;
-        case 'closed': text = '接続が切れました'; kind = 'bad'; detail = REASON_TEXT[s.endReason] || ''; break;
+        case 'closed':
+          text = s.endReason === 'remote-bye' ? '対戦相手が退出しました' : '接続が切れました'; kind = 'bad';
+          detail = s.endReason === 'remote-bye' ? '' : (REASON_TEXT[s.endReason] || '');
+          break;
         case 'failed':
-          text = s.endReason === 'user' ? '接続を取り消しました' : '接続に失敗しました';
+          text = s.endReason === 'user' ? '退出しました' : '接続できませんでした';
           kind = s.endReason === 'user' ? 'wait' : 'bad';
           detail = s.endReason === 'user' ? '' : (REASON_TEXT[s.endReason] || REASON_TEXT.error);
           break;
       }
-      if (st === 'closed' || (st === 'failed' && s.endReason !== 'user')) detail += ' もう一度ルームを作る／参加するには「メニューへ戻る」を押してください。';
       setText($.statusText, text);
       $.status.dataset.kind = kind;
       setText($.detail, detail);
-      $.role.hidden = !s.role || st !== 'connected';
-      setText($.role, s.role || '');
+      setText($.role, s.role ? s.role + '（' + (s.role === 'HOST' ? 'コタロ' : 'ルミポ') + '）' : '-');
 
       // ルームコード（HOST の待機中・接続中）
-      const showRoom = s.role === 'HOST' && !!s.code && (st === 'waiting' || st === 'connecting' || st === 'connected');
+      const showRoom = s.role === 'HOST' && !!s.code && (st === 'waiting' || st === 'connecting');   // Phase 11：接続したら READY を大きく見せる（コードは不要）
       $.room.hidden = !showRoom;
       if (showRoom) setText($.roomCode, s.displayCode);
 
@@ -563,25 +594,25 @@
         $.moveBtn.hidden = false;
         $.moveBtn.disabled = starting;
         $.moveBtn.classList.toggle('is-ready', L.me);
-        setText($.moveBtn, starting ? '開始しています…' : L.me ? 'READY を取り消す' : 'READY');
-        // 両方の状態（GUEST の自分の値は HOST が確認するまで「確認中」）
-        const tag = (on) => '<span class="' + (on ? 'is-ready">READY' : 'not-ready">NOT READY') + '</span>';
-        const hostOn = host ? L.me : L.peer, guestOn = host ? L.peer : L.me;
-        const wait = !host && L.me !== L.meHost ? '（確認中）' : '';
-        const html = 'HOST：' + tag(hostOn) + '　GUEST：' + tag(guestOn) + wait;
-        if ($.readyState.innerHTML !== html) $.readyState.innerHTML = html;   // 固定の文言だけ（相手からの文字列は入れない）
-        setText($.moveSub, (host
-          ? 'あなた＝コタロ、相手＝ルミポ。'
-          : 'あなた＝ルミポ、相手＝コタロ。') +
-          '両方が READY を押すと 3 / 2 / 1 / START! で試合が始まります（3 ストック）。操作：移動・ジャンプ・ぽよんアタック（J）・クラゲ電撃（K）・バブルショット（L）・ガード（I）。');
+        setText($.moveBtn, starting ? 'まもなく開始…' : L.me ? '準備を取り消す' : 'READY');
+        // Phase 11：あなた / 相手 の準備（GUEST の自分の値は HOST が確認するまで「確認中」。決まった文言だけを表示）
+        const me = host ? 'コタロ' : 'ルミポ', peer = host ? 'ルミポ' : 'コタロ';
+        const card = (el, name, on, extra) => {
+          setText(el.querySelector('.ol-rc-name'), name);
+          setText(el.querySelector('.ol-rc-state'), (on ? '準備OK' : '準備中') + (extra || ''));
+          el.classList.toggle('is-ready', on);
+        };
+        card($.rcMe, 'あなた（' + me + '）', L.me, !host && L.me && !L.meHost ? '（確認中）' : '');
+        card($.rcPeer, '相手（' + peer + '）', L.peer);
+        setText($.moveSub, L.me && L.peer ? 'まもなく試合が始まります' : L.me ? '対戦相手の準備を待っています…' : L.peer ? '対戦相手は準備OKです。READY を押してください' : '2人とも READY を押すと試合が始まります（3ストック制）');
       }
       $.moveNote.hidden = !this.moveNote;
       setText($.moveNote, this.moveNote);
 
-      // 下のボタン：接続中は「切断」、終わったら「メニューへ戻る」
+      // 下のボタン：接続中は「退出」（待機中は「やめる」）、終わったら「オンライン対戦メニューへ戻る」
       const active = s.active;
       $.disconnect.hidden = !active;
-      setText($.disconnect, st === 'connected' ? '切断' : 'やめる');
+      setText($.disconnect, st === 'connected' ? '退出' : 'やめる');
       $.backMenu.hidden = active;
     }
 

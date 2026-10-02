@@ -606,7 +606,9 @@
         : (dt) => this.guestStep(dt);
       document.body.dataset.onlineTest = role.toLowerCase();
       this.hud.hidden = false;
-      this.$.role.textContent = role === 'HOST' ? 'HOST：コタロを操作中（ルミポ = GUEST）' : 'GUEST：ルミポを操作中';
+      this.$.role.textContent = role === 'HOST' ? 'HOST：コタロを操作中（ルミポ = GUEST）' : 'GUEST：ルミポを操作中';   // Phase 11：詳細を開いた時だけ表示
+      this.hud.classList.add('diag-off');   // Phase 11：診断は毎回閉じた状態から（「詳細」で開く）
+      this.renderDiagBtn();
       this.hud.dataset.role = role.toLowerCase();
       this.renderPredBtn();
       this.diagTimer = setInterval(() => this.renderDiag(), 250);
@@ -967,18 +969,41 @@
       this.renderResultUi();
       if (gen) this.log('MATCH #' + gen + ' → countdown');
     }
-    // 勝敗表示の「もう一度」「終了する」と再戦の状態（オンラインの時だけ表示。既存の「もう一度」「タイトルへ戻る」は CSS で隠す）
+    // Phase 11：退出（オンライン対戦メニューへ。接続も閉じる。online-ui が無い時は今までどおり終了だけ）
+    quit() { if (this.hooks.onQuit) this.hooks.onQuit(); else this.end(); }
+    renderDiagBtn() {
+      const b = this.hud && this.hud.querySelector('[data-olm="diag"]');
+      if (!b) return;
+      const open = !this.hud.classList.contains('diag-off');
+      b.textContent = open ? '詳細を閉じる' : '詳細';
+      b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    // Phase 11：接続の状態（小さな丸）。HOST の状態が 0.5 秒以上届かない（GUEST）/ GUEST の入力が届かない（HOST）時は「通信が不安定」
+    renderConn() {
+      const el = this.hud && this.hud.querySelector('.olm-conn');
+      if (!el || !this.st) return;
+      const t = now();
+      const last = this.role === 'HOST' ? (this.remote ? this.remote.lastAt : 0) : this.st.lastStateAt;
+      const bad = !!last && t - last > 500;
+      const kind = bad ? 'warn' : 'ok';
+      if (el.dataset.kind !== kind) { el.dataset.kind = kind; el.querySelector('.olm-conn-text').textContent = bad ? '通信が不安定' : '接続中'; }
+    }
+    // 勝敗表示の「再戦」「退出」と再戦の状態（オンラインの時だけ表示。既存の「もう一度」「タイトルへ戻る」は CSS で隠す）
     renderResultUi() {
       const el = this.$ && this.$.res;
       if (!el || !this.mt) return;
       const host = this.role === 'HOST';
       const me = this.mt.rematch[host ? 0 : 1] || (!host && this.mt.myRematch);
       const peer = this.mt.rematch[host ? 1 : 0];
-      const txt = me ? '相手を待っています…' : peer ? '相手が再戦を希望しています' : '';
+      const txt = me ? '対戦相手を待っています…' : peer ? '対戦相手が再戦を希望しています' : '';
       if (el.status.textContent !== txt) el.status.textContent = txt;
       el.again.disabled = me;
-      const label = me ? '再戦を希望しました' : 'もう一度';
+      const label = me ? '再戦を希望しました' : '再戦';
       if (el.again.textContent !== label) el.again.textContent = label;
+      // Phase 11：自分から見た結果（勝敗は HOST が決めた既存の result / winner。表示だけ）
+      const g = KG.game, mine = host ? g.player : g.cpu;
+      const out = !g.result ? '' : !g.winner ? '引き分け' : g.winner === mine ? 'あなたの勝ち！' : 'あなたの負け…';
+      if (el.outcome.textContent !== out) el.outcome.textContent = out;
     }
     // 診断：試合の番号・段階・再戦希望・古い試合の受信を捨てた数
     matchLine() {
@@ -2109,17 +2134,21 @@
       const hud = this.hud = document.createElement('div');
       hud.id = 'ol-move-hud';
       hud.hidden = true;
+      // Phase 11：通常は「接続の状態（小さな丸）・詳細・退出」だけ。開発用（役割・予測 / LagComp の切り替え・診断）は「詳細」を開いた時だけ
       hud.innerHTML =
         '<div class="olm-top">' +
-          '<span class="olm-badge">ONLINE TEST・3ストック</span>' +
+          '<span class="olm-conn" data-kind="ok" title="接続の状態"><i aria-hidden="true"></i><span class="olm-conn-text">接続中</span></span>' +
+          '<button type="button" class="olm-btn olm-diag-btn" data-olm="diag" aria-expanded="false">詳細</button>' +
+          '<button type="button" class="olm-btn olm-end" data-olm="end">退出</button>' +
+        '</div>' +
+        '<div class="olm-dev">' +
+          '<span class="olm-badge">診断</span>' +
           '<span class="olm-role"></span>' +
           '<button type="button" class="olm-btn olm-pred" data-olm="pred">予測 ON</button>' +
           '<button type="button" class="olm-btn olm-lag" data-olm="lag">LagComp ON</button>' +
-          '<button type="button" class="olm-btn" data-olm="diag">診断</button>' +
-          '<button type="button" class="olm-btn olm-end" data-olm="end">実験を終了</button>' +
         '</div>' +
         '<pre class="olm-diag"></pre>' +
-        '<p class="olm-hint">移動：<kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd>　ジャンプ：<kbd>Space</kbd> <kbd>W</kbd> <kbd>↑</kbd>　攻撃（ぽよんアタック）：<kbd>J</kbd>　必殺（クラゲ電撃）：<kbd>K</kbd>　泡（バブルショット）：<kbd>L</kbd>　ガード：<kbd>I</kbd></p>';
+        '<p class="olm-hint">移動：<kbd>A</kbd><kbd>D</kbd> / <kbd>←</kbd><kbd>→</kbd>　ジャンプ：<kbd>Space</kbd>　攻撃：<kbd>J</kbd>　必殺：<kbd>K</kbd>　泡：<kbd>L</kbd>　ガード：<kbd>I</kbd></p>';
       root.appendChild(hud);
       // Phase 9：勝敗表示（既存の #ko-overlay）に、オンライン実験の時だけ出す案内（「もう一度」「タイトルへ戻る」は CSS で隠す）
       //   Phase 10：「もう一度」（両方が押したら次の試合）・「終了する」（接続画面へ）と、相手を待っているかの表示
@@ -2127,8 +2156,8 @@
       if (ov) {
         const box = document.createElement('div');
         box.className = 'ko-online';
-        box.innerHTML = '<p class="ko-online-status" aria-live="polite"></p><div class="ko-online-actions">' +
-          '<button type="button" class="menu-btn primary" data-olr="again">もう一度</button><button type="button" class="menu-btn ghost" data-olr="quit">終了する</button></div>';
+        box.innerHTML = '<p class="ko-online-outcome"></p><p class="ko-online-status" aria-live="polite"></p><div class="ko-online-actions">' +
+          '<button type="button" class="menu-btn primary" data-olr="again">再戦</button><button type="button" class="menu-btn ghost" data-olr="quit">退出</button></div>';
         ov.appendChild(box);
       }
       this.$ = { role: hud.querySelector('.olm-role'), diag: hud.querySelector('.olm-diag'), predBtn: hud.querySelector('[data-olm="pred"]'), lagBtn: hud.querySelector('[data-olm="lag"]') };
@@ -2137,17 +2166,29 @@
         el.addEventListener('pointerup', (e) => { e.stopPropagation(); if (el._armed === e.pointerId) fn(); el._armed = null; });
         el.addEventListener('click', (e) => { if (e.detail === 0) fn(); });
       };
-      bindBtn(hud.querySelector('[data-olm="end"]'), () => { if (KG.sound) KG.sound.play('back'); this.end(); });
+      // Phase 11：対戦中の「退出」は誤タップ防止のため 2 回押し（1 回目で「もう一度押すと退出」）
+      const endBtn = hud.querySelector('[data-olm="end"]');
+      bindBtn(endBtn, () => {
+        if (!this.endArmed) {
+          this.endArmed = true; endBtn.textContent = 'もう一度押すと退出'; endBtn.classList.add('is-armed');
+          clearTimeout(this.endArmTimer);
+          this.endArmTimer = setTimeout(() => { this.endArmed = false; endBtn.textContent = '退出'; endBtn.classList.remove('is-armed'); }, 2500);
+          return;
+        }
+        clearTimeout(this.endArmTimer); this.endArmed = false; endBtn.textContent = '退出'; endBtn.classList.remove('is-armed');
+        if (KG.sound) KG.sound.play('back');
+        this.quit();
+      });
       if (ov) {
         const q = (k) => ov.querySelector('[data-olr="' + k + '"]');
-        this.$.res = { status: ov.querySelector('.ko-online-status'), again: q('again') };
+        this.$.res = { status: ov.querySelector('.ko-online-status'), outcome: ov.querySelector('.ko-online-outcome'), again: q('again') };
         bindBtn(q('again'), () => { if (!this.$.res.again.disabled) this.requestRematch(); });
-        bindBtn(q('quit'), () => { if (KG.sound) KG.sound.play('back'); this.end(); });
+        bindBtn(q('quit'), () => { if (KG.sound) KG.sound.play('back'); this.quit(); });
       }
-      bindBtn(hud.querySelector('[data-olm="diag"]'), () => hud.classList.toggle('diag-off'));
+      bindBtn(hud.querySelector('[data-olm="diag"]'), () => { hud.classList.toggle('diag-off'); this.renderDiagBtn(); });
       bindBtn(this.$.predBtn, () => { if (KG.sound) KG.sound.play('select'); this.setPrediction(!this.predEnabled); });
       bindBtn(this.$.lagBtn, () => { if (KG.sound) KG.sound.play('select'); this.setLagComp(!this.lagEnabled); });
-      if (window.matchMedia && matchMedia('(pointer: coarse)').matches) hud.classList.add('diag-off'); // スマホは最初は畳む
+      hud.classList.add('diag-off');   // Phase 11：診断は通常は閉じている（PC・スマホとも）
 
       // GUEST 用のタッチ操作：左に LEFT / RIGHT（指を滑らせて切り替え可）、右に JUMP。マルチタッチ対応
       const pad = this.pad = document.createElement('div');
@@ -2222,6 +2263,7 @@
     renderDiag() {
       if (!this.active) return;
       this.renderResultUi();   // Phase 10
+      this.renderConn();       // Phase 11
       const s = this.session, st = this.st, p = s.ping;
       const ms = (v) => v == null ? '-' : Math.round(v) + 'ms';
       const hz = (v) => v.toFixed(0) + 'Hz';
