@@ -110,7 +110,8 @@
     // ---- Phase 3：HOST の入力キュー ----
     hostQueueTarget: 3,       // HOST：未適用の入力がこれより多い時は 1 ステップで 2 件適用して追いつく（HOST 側の遅れを 約 50ms までに）
     hostQueueMax: 30,
-    hostDrainTicks: 30,       // HOST：未適用が 2 件以上のまま この ステップ数 続いたら 1 件追いつく（Phase 4）         // HOST：未適用の入力の上限（あふれた分は古い順に捨てる）
+    hostDrainTicks: 30,       // HOST：未適用が 2 件以上のまま この ステップ数 続いたら 1 件追いつく（Phase 4）
+    pressDrainMax: 3,         // HOST：攻撃・必殺・泡の押下がキューの途中にある時、その手前を 1 ステップで最大この件数まで先に適用する（Phase 10.2）         // HOST：未適用の入力の上限（あふれた分は古い順に捨てる）
     // ---- Phase 3：GUEST の予測と補正（単位はゲーム内の座標。ルミポの幅 70、地上の最高速度 340/秒 = 1 ステップ 約 5.7）----
     maxPending: 180,          // GUEST：未確認入力の上限（3 秒分）。超えたら古い順に捨てる
     errIgnore: 0.5,           // これ未満の誤差は「補正」として数えない（表示上は見えない大きさ。同じ方法で静かに吸収）
@@ -273,6 +274,8 @@
       this.last = { mx: 0, hj: 0, hg: 0 };    // 最後に適用した入力（次が届くまではこれを続ける。ガードを押している状態も）
       this.lastAt = 0; this.neutral = true;
       this.dupTicks = 0; this.catchUps = 0; this.overflow = 0;
+      this.pressDrains = 0; this.pressDrained = 0;   // Phase 10.2（診断）：押下のために先に適用した回数・件数
+      this.pressArr = new Map(); this.pressWait = new Samples();   // Phase 10.2（診断）：攻撃・必殺・泡の押下が HOST に届いてから適用されるまで
       this.lastAp = 0; this.lastSp = 0; this.lastBp = 0;
       this.lastPressSeq = 0;           // 最後に適用した「攻撃を押した」入力の番号（攻撃 ID の元）
       this.lastSpecialSeq = 0;         // 最後に適用した「必殺を押した」入力の番号（Phase 6）
@@ -301,6 +304,7 @@
       const pb = msg.bp > this.lastBp ? 1 : 0;           // 泡を押した瞬間（Phase 7。同上）
       this.lastSeq = msg.s; this.lastJp = msg.jp; this.lastAp = msg.ap; this.lastSp = msg.sp; this.lastBp = msg.bp; this.lastAt = t; this.neutral = false;
       const ref = pa || ps;
+      if (!neutral && (pa || ps || pb)) { this.pressArr.set(msg.s, t); if (this.pressArr.size > 32) this.pressArr.delete(this.pressArr.keys().next().value); }
       if (neutral) this.queue.push({ s: msg.s, mx: 0, hj: 0, hg: 0, pj: 0, pa: 0, ps: 0, pb: 0, ts: msg.ts });
       else this.queue.push({ s: msg.s, mx: (msg.r ? 1 : 0) - (msg.l ? 1 : 0), hj: msg.j, hg: msg.g, pj, pa, ps, pb, ts: msg.ts, rs: ref ? msg.rs : undefined, rf: ref ? msg.rf : undefined });
       if (this.queue.length > CFG.hostQueueMax) {        // あふれたら古い入力を捨てる（押した瞬間は次へ持ち越す）
@@ -332,6 +336,7 @@
     noteApplied(c) {
       if (c.hg && !this.last.hg && this.onGuard) this.onGuard(c);   // Phase 8：ガードを押し始めた入力を HOST が適用した（診断：届くまでの時間）
       this.lastApplied = c.s; this.last = c;
+      if (this.pressArr.has(c.s)) { this.pressWait.add(now() - this.pressArr.get(c.s)); this.pressArr.delete(c.s); }
       const f = this.fighter;
       if (c.pb) { this.lastShootSeq = f.lastShootSeq = c.s; this.presses.push({ s: c.s, kind: 2, ts: c.ts, tick: this.tick, lag: null }); }   // 泡：遅延補償なし
       if (!c.pa && !c.ps) return;
@@ -349,24 +354,40 @@
       }
       // 未適用がたまっている（通信が一時的に詰まって、まとめて届いた）：このステップで 1 件余分に適用して追いつく
       const f = this.fighter;
+      const fighting = KG.game && KG.game.phase === 'fight' && f.status && f.status.isAlive;
+      // Phase 10.2：攻撃・必殺・泡を押した入力がキューの途中で待っている時は、その手前の入力を今のステップで先に適用して、押下をこのステップで適用する。
+      //   通信の揺れで残った未適用の入力（1〜2 件）が攻撃の開始を毎回遅らせていたため（GUEST の画面で触れて見えてから HIT まで）。
+      //   適用する入力も順番も同じなので予測とずれない。技・被弾・ヒットストップの途中では行わない（攻撃判定やヒットストップのフレームを飛ばさない）。
+      if (fighting && !f.action && f.hitstun === 0 && f.hitstop === 0 && !(f.attackBufferTimer > 0) && !(f.specialBufferTimer > 0) && !(f.shootBufferTimer > 0)) {
+        let k = 0;
+        for (let i = 1; i < q.length && i <= CFG.pressDrainMax; i++) if (q[i].pa || q[i].ps || q[i].pb) { k = i; break; }
+        if (k > 0 && !(q[0].pa || q[0].ps || q[0].pb)) {
+          for (let n = 0; n < k; n++) this.applyExtra(q.shift());
+          this.pressDrains++; this.pressDrained += k; this.standing = 0;
+        }
+      }
       // 未適用が 2 件以上の状態が 0.5 秒続いた時も 1 件追いつく（通信の揺れでたまった分を少しずつ減らし、HOST での反映の遅れを小さく保つ）
       this.standing = q.length > 1 ? (this.standing || 0) + 1 : 0;
       const drain = this.standing >= CFG.hostDrainTicks;
       // Phase 9：試合中だけ（終了後に GUEST の入力でルミポを動かさない。通常の 1 件は既存の Game.step が試合中以外は捨てる）
-      if ((q.length > CFG.hostQueueTarget || drain) && f.status && f.status.isAlive && KG.game && KG.game.phase === 'fight') {
+      if ((q.length > CFG.hostQueueTarget || drain) && fighting) {
         this.standing = 0;
-        const extra = q.shift();
-        this.noteApplied(extra);
-        f.update(KG.CONFIG.fixedStep, this.toCmd(extra), this.stage);   // 既存の物理をそのまま 1 回分
-        if (this.onFx) for (const ev of f.fxEvents) this.onFx(ev);       // Phase 6：追いつきのステップで出た演出（溜め・放電）も既存の Effects へ
-        if (this.onSpawn) for (const ev of f.spawnEvents) this.onSpawn(ev); // Phase 7：追いつきのステップで発射した泡も既存の ProjectileSystem へ
-        f.fxEvents.length = 0; f.spawnEvents.length = 0;
-        if (f.action && f.action.aid == null) f.action.aid = aidFor(f);
+        this.applyExtra(q.shift());
         this.catchUps++;
       }
       const c = q.shift();
       this.noteApplied(c);
       return this.toCmd(c);
+    }
+    // 入力 1 件を今のステップの通常分より先に、既存の物理でそのまま 1 回分適用する（追いつき。Phase 3 / 4、Phase 10.2 で押下の前にも使う）
+    applyExtra(extra) {
+      const f = this.fighter;
+      this.noteApplied(extra);
+      f.update(KG.CONFIG.fixedStep, this.toCmd(extra), this.stage);   // 既存の物理をそのまま 1 回分
+      if (this.onFx) for (const ev of f.fxEvents) this.onFx(ev);       // Phase 6：追いつきのステップで出た演出（溜め・放電）も既存の Effects へ
+      if (this.onSpawn) for (const ev of f.spawnEvents) this.onSpawn(ev); // Phase 7：追いつきのステップで発射した泡も既存の ProjectileSystem へ
+      f.fxEvents.length = 0; f.spawnEvents.length = 0;
+      if (f.action && f.action.aid == null) f.action.aid = aidFor(f);
     }
   }
 
@@ -2216,7 +2237,8 @@
         const inTxt = r.neutral ? 'ニュートラル' : [L.mx < 0 ? 'LEFT' : '', L.mx > 0 ? 'RIGHT' : '', L.hj ? 'JUMP' : ''].filter(Boolean).join('+') || '-';
         lines.push(
           'GUEST入力 ' + hz(st.inputRate.value) + '  seq ' + st.lastInputSeqRecv + '（適用 ' + r.lastApplied + '）未適用 ' + r.queue.length + '  古い ' + st.staleInputs +
-            '  続けた ' + r.dupTicks + '  追いつき ' + r.catchUps + (r.overflow ? '  あふれ ' + r.overflow : '') + (st.floodDropped ? '  過多 ' + st.floodDropped : ''),
+            '  続けた ' + r.dupTicks + '  追いつき ' + r.catchUps + (r.pressDrains ? '（押下 ' + r.pressDrains + '回 ' + r.pressDrained + '件）' : '') +
+            '  押下の待ち（受信→適用）' + ms(r.pressWait.median) + '（max ' + ms(r.pressWait.max) + '）' + (r.overflow ? '  あふれ ' + r.overflow : '') + (st.floodDropped ? '  過多 ' + st.floodDropped : ''),
           '入力が届くまで ' + ms(st.inputDelay.avg) + '（max ' + ms(st.inputDelay.max) + '）  HOST状態 送信 ' + hz(st.stateRate.value) + '  seq ' + st.stateSeq +
             '  ルミポ入力 ' + inTxt + (st.neutralCount ? '  無通信 ' + st.neutralCount : '') + '  命中 ' + st.hitSeq,
           'LagComp ' + (this.lagEnabled ? 'ON' : 'OFF') + '［C］ 上限 ' + CFG.lagMaxMs + 'ms  巻き戻し 平均 ' + num(st.rewindMs.mean) + ' / 中央値 ' + num(st.rewindMs.median) +
@@ -2262,7 +2284,7 @@
         lines.push('時間        押す→予測 押す→発動確認 HIT→表示 見た目の接触→HIT │ 位置の差 画面−今 / 画面−補償の参照（巻き戻し）');
         st.gk.slice(0, 2).forEach((G, i) => {
           lines.push(name(i) + P(ms(G.keyToPred.mean), 8) + P(ms(G.acceptRtt.avg), 13) + P(ms(G.hitShow.avg), 9) + P(ms(G.contactToHit.median), 13) + '（max ' + ms(G.contactToHit.max) + '）' +
-            ' │ ' + P(num(G.dKotaro.mean), 6) + ' / ' + num(G.dKotaroPast.mean) + '（' + num(G.gRewind.mean) + 'ms）');
+            ' │ ' + P(num(G.dKotaro.mean), 6) + ' / ' + num(G.dKotaroPast.mean) + '（巻き戻し ' + num(G.gRewind.mean) + 'ms）');
         });
         const gb = st.gb, f1 = (v) => v == null ? '-' : v.toFixed(1);
         lines.push('バブル  入力 ' + st.gk[2].pressSent + ' 予測発射 ' + gb.predSpawned + ' 引継ぎ ' + gb.linked + ' 破棄 ' + gb.discarded + ' 予測なし ' + gb.hostOnly +
